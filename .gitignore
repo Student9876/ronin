@@ -1,0 +1,33 @@
+# --- Python/Backend ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# --- SearXNG Data ---
+# If you ever mount a data volume for SearXNG, add the folder here
+searxng/data/
+
+# --- Node/Frontend ---
+node_modules/
+.next/
+out/
+.env.local
+.DS_Store
+
+# --- Docker & Orchestration ---
+# Ignore environment specific overrides
+docker-compose.override.yml
+.docker-container-id
+
+# --- System ---
+.DS_Store
+.vscode/
+.idea/

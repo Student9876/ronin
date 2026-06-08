@@ -1,0 +1,79 @@
+# Project Ronin - Production SearXNG Configuration
+use_default_settings: true
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "ronin_secret_activation_key_change_this_in_production"
+  image_proxy: true
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  # Force JSON output so our HTTPX scraper can parse payloads natively
+  formats:
+    - html
+    - json
+
+engines:
+  - name: bing
+    engine: bing
+    shortcut: bi
+    categories: general
+    timeout: 3.0
+    weight: 1.0
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    categories: general
+    timeout: 3.0
+    weight: 1.5
+    disabled: true
+
+  - name: qwant
+    engine: qwant
+    shortcut: qw
+    categories: general
+    timeout: 2.0
+    weight: 1.0
+
+  # - name: duckduckgo
+  #   engine: duckduckgo
+  #   shortcut: dd
+  #   categories: general
+  #   timeout: 4.0
+  #   weight: 1.0
+  #   disabled: false
+
+  # - name: google
+  #   engine: google
+  #   shortcut: go
+  #   categories: general
+  #   timeout: 5.0
+  #   weight: 1.0
+  #   # Disabled by default because Google flags local data-center IPs instantly. 
+  #   # Use Brave and Bing as your primary workhorses.
+  #   disabled: true 
+
+  # - name: wikipedia
+  #   engine: wikipedia
+  #   shortcut: wp
+  #   categories: general
+  #   timeout: 2.0
+
+# Aggressive outgoing request modifications to mimic a real browser
+outgoing:
+  request_timeout: 5.0
+  max_retry_count: 2
+  user_agent_reg_size: 10
+  pool_connections: 100
+  pool_maxsize: 10
+  
+  # Spoof headers to prevent immediate 403/429 responses from upstream engines
+  headers:
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    'Accept-Language': 'en-US,en;q=0.5'
+    'Cache-Control': 'no-cache'
+    'Connection': 'keep-alive'

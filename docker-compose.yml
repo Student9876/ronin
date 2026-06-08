@@ -1,0 +1,21 @@
+version: "3.8"
+services:
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend/searxng:/etc/searxng:rw
+    restart: always
+
+  ronin_agent:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - SEARXNG_URL=http://searxng:8080
+    depends_on:
+      - searxng
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
