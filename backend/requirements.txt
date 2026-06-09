@@ -10,3 +10,4 @@ chromadb>=0.4.24
 sentence-transformers>=3.0.0
 beautifulsoup4>=4.12.0
 python-dateutil>=2.9.0
+sqlmodel==0.0.16
