@@ -49,3 +49,5 @@ yarn-error.log*
 .vscode/
 .idea/
 *.pem
+
+ronin_database.db

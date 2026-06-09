@@ -108,38 +108,44 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 
 			<main className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8">
 				<div className="max-w-3xl mx-auto space-y-8">
-					{messages.map((msg) => (
-						<div key={msg.id} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
-							{msg.role === "user" && (
-								<div className="bg-neutral-800 px-6 py-4 rounded-2xl max-w-[80%] text-neutral-200 shadow-sm">{msg.content}</div>
-							)}
+					{messages.map((msg, msgIndex) => {
+						// Check if this specific message is the active one at the bottom of the screen
+						const isLastMessage = msgIndex === messages.length - 1;
 
-							{msg.role === "agent" && (
-								<div className="w-full space-y-4">
-									{msg.statuses && msg.statuses.length > 0 && (
-										<div className="flex flex-col space-y-2 border-l-2 border-neutral-800 pl-4 py-2">
-											{msg.statuses.map((status, idx) => (
-												<div key={idx} className="flex items-center space-x-3 text-sm text-neutral-400 font-mono">
-													{idx === msg.statuses!.length - 1 && isStreaming ? (
-														<Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-													) : (
-														<CheckCircle2 className="w-4 h-4 text-emerald-500" />
-													)}
-													<span>{status.message}</span>
-												</div>
-											))}
-										</div>
-									)}
+						return (
+							<div key={msg.id} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
+								{msg.role === "user" && (
+									<div className="bg-neutral-800 px-6 py-4 rounded-2xl max-w-[80%] text-neutral-200 shadow-sm">{msg.content}</div>
+								)}
 
-									{msg.content && (
-										<div className="prose prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-neutral-900 prose-pre:border prose-pre:border-neutral-800 bg-neutral-900/30 p-6 rounded-xl border border-neutral-800/50">
-											<ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
-										</div>
-									)}
-								</div>
-							)}
-						</div>
-					))}
+								{msg.role === "agent" && (
+									<div className="w-full space-y-4">
+										{msg.statuses && msg.statuses.length > 0 && (
+											<div className="flex flex-col space-y-2 border-l-2 border-neutral-800 pl-4 py-2">
+												{msg.statuses.map((status, idx) => (
+													<div key={idx} className="flex items-center space-x-3 text-sm text-neutral-400 font-mono">
+														{/* THE FIX: Only spin if it's the last status AND streaming AND the active message */}
+														{idx === msg.statuses!.length - 1 && isStreaming && isLastMessage ? (
+															<Loader2 className="w-4 h-4 animate-spin text-blue-500" />
+														) : (
+															<CheckCircle2 className="w-4 h-4 text-emerald-500" />
+														)}
+														<span>{status.message}</span>
+													</div>
+												))}
+											</div>
+										)}
+
+										{msg.content && (
+											<div className="prose prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-neutral-900 prose-pre:border prose-pre:border-neutral-800 bg-neutral-900/30 p-6 rounded-xl border border-neutral-800/50">
+												<ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+											</div>
+										)}
+									</div>
+								)}
+							</div>
+						);
+					})}
 					<div ref={bottomRef} />
 				</div>
 			</main>
