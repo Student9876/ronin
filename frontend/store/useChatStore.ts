@@ -28,6 +28,8 @@ interface ChatState {
     setStreaming: (status: boolean) => void;
     setSettings: (newSettings: Partial<AgentSettings>) => void;
     clearMessages: () => void;
+    deleteThread: (id: number) => Promise<void>;
+    renameThread: (id: number, title: string) => Promise<void>;
 }
 
 const API_BASE = "http://localhost:8000/api/v1";
@@ -59,7 +61,7 @@ export const useChatStore = create<ChatState>((set) => ({
         try {
             const res = await fetch(`${API_BASE}/threads/${threadId}/messages`);
             const data = await res.json();
-            
+
             // Prevent the crash if the backend returns an error object instead of an array
             if (!Array.isArray(data)) {
                 console.error("Backend did not return an array of messages:", data);
@@ -105,4 +107,33 @@ export const useChatStore = create<ChatState>((set) => ({
     setSettings: (newSettings) =>
         set((state) => ({ settings: { ...state.settings, ...newSettings } })),
     clearMessages: () => set({ messages: [] }),
+
+    deleteThread: async (threadId: number) => {
+        try {
+            await fetch(`${API_BASE}/threads/${threadId}`, { method: "DELETE" });
+            set((state) => ({
+                threads: state.threads.filter((t) => t.id !== threadId),
+                // If the user deletes the active thread, clear the messages
+                messages: state.messages.length > 0 && state.messages[0].id.toString().includes(threadId.toString()) ? [] : state.messages
+            }));
+        } catch (error) {
+            console.error("Failed to delete thread:", error);
+        }
+    },
+
+    renameThread: async (threadId: number, newTitle: string) => {
+        try {
+            const res = await fetch(`${API_BASE}/threads/${threadId}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ title: newTitle }),
+            });
+            const updated = await res.json();
+            set((state) => ({
+                threads: state.threads.map((t) => (t.id === threadId ? updated : t)),
+            }));
+        } catch (error) {
+            console.error("Failed to rename thread:", error);
+        }
+    },
 }));
