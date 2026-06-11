@@ -8,19 +8,6 @@ import {useChatStore} from "@/store/useChatStore";
 import type {Components} from "react-markdown";
 
 import {Prism as SyntaxHighlighter} from "react-syntax-highlighter";
-import {vscDarkPlus} from "react-syntax-highlighter/dist/esm/styles/prism";
-
-// Pure function to handle dynamic route resolution
-const getStreamUrl = (settings: any, threadId: number, query: string) => {
-	const base = "http://localhost:8000/api/v1/research";
-	const encodedQuery = encodeURIComponent(query);
-
-	if (settings.mode === "deep") {
-		return `${base}/deep/stream?thread_id=${threadId}&query=${encodedQuery}&depth=${settings.searchDepth}&strictness=${settings.strictness}`;
-	}
-	// General mode doesn't need depth/strictness parameters based on your backend router
-	return `${base}/general/stream?thread_id=${threadId}&query=${encodedQuery}`;
-};
 
 export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 	const resolvedParams = use(params);
@@ -156,8 +143,10 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 																inline,
 																className,
 																children,
+																style: _style,
 																...props
 															}: React.ComponentPropsWithoutRef<"code"> & {inline?: boolean}) {
+																void _style;
 																const match = /language-(\w+)/.exec(className || "");
 																return !inline && match ? (
 																	<div className="rounded-md overflow-hidden my-4 border border-neutral-800">
@@ -165,11 +154,10 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 																			{match[1]}
 																		</div>
 																		<SyntaxHighlighter
-																			style={vscDarkPlus as unknown as any}
 																			language={match[1]}
 																			PreTag="div"
 																			customStyle={{margin: 0, padding: "1rem", background: "#0a0a0a"}}
-																			{...(props as any)}>
+																			{...props}>
 																			{String(children).replace(/\n$/, "")}
 																		</SyntaxHighlighter>
 																	</div>
