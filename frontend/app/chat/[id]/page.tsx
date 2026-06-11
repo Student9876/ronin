@@ -63,8 +63,15 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 
 				for (const line of lines) {
 					if (line.startsWith("data: ")) {
-						const dataStr = line.replace("data: ", "");
+						const dataStr = line.replace("data: ", "").trim();
 						if (!dataStr) continue;
+
+						// Intercept termination token to protect parsing loop execution
+						if (dataStr === "[DONE]") {
+							console.log("Stream successfully concluded via backend signal.");
+							setStreaming(false);
+							continue;
+						}
 
 						try {
 							const data = JSON.parse(dataStr);

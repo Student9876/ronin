@@ -1,210 +1,201 @@
 import json
 import httpx
-import instructor
-from typing import Dict, List, Any, TypedDict
+from typing import List, Dict, Any, Literal
 from pydantic import BaseModel, Field
-from openai import AsyncOpenAI
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import StateGraph, END
+from sqlalchemy.orm import Session
 
 from src.config.agent_config import settings
-from src.config.database import Message, engine
-from sqlmodel import Session
+from src.agent.tools.vector_store import VectorManager
+from src.agent.tools.ingestion import ingest_url
+from src.utils.network import get_http_client
 
-# 1. Dual-Client Architecture
-# Base client for pure text generation
-base_client = AsyncOpenAI(base_url=settings.LOCAL_LLM_URL, api_key="lm-studio")
-# Instructor-patched client strictly for structured JSON enforcement
-instructor_client = instructor.from_openai(base_client, mode=instructor.Mode.JSON)
+from src.config.database import engine, Message
 
-# 2. Pydantic Schemas & State Definition
-class SubtopicsSchema(BaseModel):
-    subtopics: List[str] = Field(description="A list of 3 highly specific research sub-topics.")
+# Initialize our reusable vector client
+research_vectors = VectorManager("research_nodes")
 
-class ResearchState(TypedDict):
-    topic: str
-    subtopics: List[str]
-    current_index: int
-    current_subtopic: str
-    raw_findings: List[str]                   # Temporary memory: wiped clean every cycle
-    compressed_sections: List[Dict[str, str]] # Permanent memory: incrementally built
-    final_report: str
+# --- Structured Output Schemas ---
+class GapAnalysis(BaseModel):
+    is_context_sufficient: bool = Field(
+        description="True if previous research artifacts inside this chat are completely sufficient to answer the prompt. False if new research is required."
+    )
+    missing_subtopics: List[str] = Field(
+        default=[],
+        description="If context is insufficient, provide a list of highly specific subtopics or queries that must be scraped to fill the knowledge gap."
+    )
 
-# 3. Graph Nodes
-async def chief_editor(state: ResearchState) -> Dict[str, Any]:
-    """Generates the research plan and forces strict JSON output using Instructor."""
-    prompt = f"Break down the following topic into exactly 3 distinct, highly specific sub-topics for investigation. Topic: {state['topic']}"
-    
-    try:
-        # Instructor guarantees we get the SubtopicsSchema object back, no parsing required
-        response = await instructor_client.chat.completions.create(
-            model=settings.MODES["deep"].model_name,
-            response_model=SubtopicsSchema,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_retries=2
+class ResearchPlan(BaseModel):
+    queries: List[str] = Field(description="List of 2-3 target search queries optimized for a search engine to fulfill the missing requirements.")
+
+# --- LangGraph State Definition ---
+class DeepResearchState(Dict[str, Any]):
+    thread_id: int
+    query: str
+    is_sufficient: bool
+    missing_subtopics: List[str]
+    research_queries: List[str]
+    retrieved_context: str
+    final_response: str
+
+# --- Helper function for Local LLM JSON handling ---
+async def call_local_llm_structured(prompt: str, response_model: Any) -> Any:
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            settings.LOCAL_LLM_URL + "/chat/completions",
+            json={
+                "messages": [
+                    {"role": "system", "content": "You are a precise data extraction engine. Respond strictly in valid JSON matching the requested schema."},
+                    {"role": "user", "content": prompt}
+                ],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.0
+            },
+            timeout=60.0
         )
-        subtopics = response.subtopics
-    except Exception as e:
-        print(f"Instructor parsing failed: {e}. Defaulting to generic subtopics.")
-        subtopics = [f"General Analysis of {state['topic']}", "Current Trends", "Future Outlook"]
-        
-    return {"subtopics": subtopics, "current_index": 0}
+        response.raise_for_status()
+        raw_json = response.json()["choices"][0]["message"]["content"]
+        return response_model.parse_raw(raw_json)
 
-async def queue_manager(state: ResearchState) -> Dict[str, Any]:
-    """Iterates through the subtopics array."""
-    idx = state.get("current_index", 0)
-    subtopics = state.get("subtopics", [])
-    
-    if idx >= len(subtopics):
-        return {"current_subtopic": "DONE"}
-        
-    return {"current_subtopic": subtopics[idx], "current_index": idx + 1}
+# --- The Graph Nodes (Strictly Returning State) ---
 
-async def searxng_scraper(state: ResearchState) -> Dict[str, Any]:
-    """Hits the local SearXNG container to extract web data."""
-    subtopic = state["current_subtopic"]
-    params = {
-        "q": subtopic,
-        "format": "json",
-        "engines": "google,duckduckgo,wikipedia",
-        "language": "en"
-    }
+async def librarian_gap_analysis(state: DeepResearchState):
+    past_nodes = await research_vectors.search_context(thread_id=state["thread_id"], query=state["query"], limit=4)
+    context_str = "\n\n".join([f"Source: {h['url']}\nContent: {h['content']}" for h in past_nodes]) if past_nodes else "No previous research conducted."
     
-    raw_findings = []
+    prompt = f"User Intent: {state['query']}\nAvailable Context:\n{context_str}\nAnalyze if context is sufficient."
+    
     try:
-        async with httpx.AsyncClient() as http_client:
-            resp = await http_client.get(settings.SEARXNG_URL, params=params, timeout=15.0)
-            resp.raise_for_status()
-            results = resp.json().get("results", [])[:4] # Cap at 4 snippets to protect VRAM
-            
-            for r in results:
-                if r.get("content"):
-                    raw_findings.append(f"Fact from {r.get('url')}: {r.get('content')}")
-    except Exception as e:
-        print(f"SearXNG failed for '{subtopic}': {e}")
-        
-    if not raw_findings:
-        raw_findings.append("No verifiable data discovered.")
-        
-    # We overwrite the raw_findings string entirely in the state
-    return {"raw_findings": raw_findings}
+        analysis = await call_local_llm_structured(prompt, GapAnalysis)
+        return {
+            "is_sufficient": analysis.is_context_sufficient,
+            "missing_subtopics": analysis.missing_subtopics,
+            "retrieved_context": context_str
+        }
+    except Exception:
+        return {"is_sufficient": False, "missing_subtopics": [state["query"]], "retrieved_context": ""}
 
-async def compactor(state: ResearchState) -> Dict[str, Any]:
-    """Map Phase: Shrinks raw search text into a dense summary, purging the raw text."""
-    subtopic = state["current_subtopic"]
-    raw_text = "\n".join(state["raw_findings"])
+async def chief_editor_planner(state: DeepResearchState):
+    prompt = f"Original Goal: {state['query']}\nMissing Info: {', '.join(state['missing_subtopics'])}\nGenerate 2 search queries."
+    try:
+        plan = await call_local_llm_structured(prompt, ResearchPlan)
+        return {"research_queries": plan.queries}
+    except:
+        return {"research_queries": [state["query"]]}
+
+async def concurrent_scraper(state: DeepResearchState):
+    queries = state["research_queries"]
+    new_scraped_text_blocks = []
     
-    prompt = f"Synthesize a factual report section for the sub-topic: '{subtopic}'. Use ONLY these facts:\n{raw_text}\n\nProvide output in Markdown."
-    
-    response = await base_client.chat.completions.create(
-        model=settings.MODES["deep"].model_name,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.1
-    )
-    
-    new_section = {"subtopic": subtopic, "content": response.choices[0].message.content}
-    
-    # State Mutation: Append to sections, but critically, WIPE raw_findings back to empty.
-    return {
-        "compressed_sections": state.get("compressed_sections", []) + [new_section],
-        "raw_findings": [] 
-    }
+    # Instantiate our centralized, footprint-guarded network utility
+    async with get_http_client() as client:
+        for q in queries:
+            try:
+                search_res = await client.get(settings.SEARXNG_URL, params={"q": q, "format": "json"})
+                results = search_res.json().get("results", [])[:2]
+                
+                for res in results:
+                    url = res.get("url")
+                    if not url: continue
+                    
+                    full_text = await ingest_url(thread_id=state["thread_id"], subtopic=q, url=url)
+                    if not full_text.startswith("Failed") and not full_text.startswith("No parseable"):
+                        new_scraped_text_blocks.append(full_text)
+            except Exception as e:
+                print(f"Scraper error parsing network data: {e}")
 
-async def synthesizer(state: ResearchState) -> Dict[str, Any]:
-    """Reduce Phase: Merges the compressed sections into the final output."""
-    sections = state.get("compressed_sections", [])
-    body = "\n\n".join([f"## {s['subtopic']}\n{s['content']}" for s in sections])
-    
-    prompt = f"Assemble a cohesive, professional research report for the topic: '{state['topic']}'.\n\nCompiled Sections:\n{body}"
-    
-    response = await base_client.chat.completions.create(
-        model=settings.MODES["deep"].model_name,
-        messages=[
-            {"role": "system", "content": settings.MODES["deep"].system_prompt},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.2
-    )
-    
-    return {"final_report": response.choices[0].message.content}
+    combined_context = state["retrieved_context"] + "\n\n" + "\n\n".join(new_scraped_text_blocks)
+    return {"retrieved_context": combined_context}
 
-# 4. Routing Logic
-def route_research(state: ResearchState) -> str:
-    if state["current_subtopic"] == "DONE":
-        return "synthesize"
-    return "searxng_scraper"
+# --- Conditional Routing ---
+def route_after_analysis(state: DeepResearchState) -> Literal["enough_context", "need_research"]:
+    return "enough_context" if state["is_sufficient"] else "need_research"
 
-# 5. Graph Assembly
-workflow = StateGraph(ResearchState)
-workflow.add_node("chief_editor", chief_editor)
-workflow.add_node("queue_manager", queue_manager)
-workflow.add_node("searxng_scraper", searxng_scraper)
-workflow.add_node("compactor", compactor)
-workflow.add_node("synthesize", synthesizer)
+# --- Graph Assembly ---
+workflow = StateGraph(DeepResearchState)
+workflow.add_node("librarian", librarian_gap_analysis)
+workflow.add_node("chief_editor", chief_editor_planner)
+workflow.add_node("scraper", concurrent_scraper)
 
-workflow.add_edge(START, "chief_editor")
-workflow.add_edge("chief_editor", "queue_manager")
-workflow.add_conditional_edges("queue_manager", route_research)
-workflow.add_edge("searxng_scraper", "compactor")
-workflow.add_edge("compactor", "queue_manager")
-workflow.add_edge("synthesize", END)
+workflow.set_entry_point("librarian")
+workflow.add_conditional_edges("librarian", route_after_analysis, {"enough_context": END, "need_research": "chief_editor"})
+workflow.add_edge("chief_editor", "scraper")
+workflow.add_edge("scraper", END)
 
-research_app = workflow.compile()
+deep_research_graph = workflow.compile()
 
-# 6. FastAPI Router Interface
-async def stream_research(payload: Any, mode_cfg: Any, session: Session):
-    """The foreground stream handler triggered by the FastAPI router."""
-    # Commit empty agent message to database
-    user_msg_db = Message(thread_id=payload.thread_id, role="user", content=payload.query)
-    session.add(user_msg_db)
-    agent_msg_db = Message(thread_id=payload.thread_id, role="agent", content="", statuses="[]")
-    session.add(agent_msg_db)
-    session.commit()
-    agent_msg_id = agent_msg_db.id
-
+# --- Unified Streaming Interface (The Orchestrator) ---
+async def stream_research(payload: Any, mode_cfg: Any, session: Any):
     initial_state = {
-        "topic": payload.query,
-        "subtopics": [],
-        "current_index": 0,
-        "current_subtopic": "",
-        "raw_findings": [],
-        "compressed_sections": [],
-        "final_report": ""
+        "thread_id": payload.thread_id,
+        "query": payload.query,
+        "is_sufficient": False,
+        "missing_subtopics": [],
+        "research_queries": [],
+        "retrieved_context": "",
+        "final_response": ""
     }
+    
+    current_state = initial_state.copy()
+    
+    # 1. State Tracking Array for SQLite Persistence
+    tracked_statuses = []
 
-    agent_statuses = []
-    final_report_content = ""
+    def record_status(node_name: str, message: str):
+        status_obj = {"type": "status", "node": node_name, "message": message}
+        tracked_statuses.append(status_obj)
+        return f"data: {json.dumps(status_obj)}\n\n"
 
-    # Stream graph progress events directly to the UI
-    try:
-        async for output in research_app.astream(initial_state):
-            for node_name, state_update in output.items():
-                msg = f"Agent executing: {node_name}..."
-                if node_name == "chief_editor":
-                    msg = f"Chief Editor planned {len(state_update.get('subtopics', []))} research lines."
-                elif node_name == "searxng_scraper":
-                    msg = "Extracting live web data..."
-                elif node_name == "compactor":
-                    msg = "Compressing findings to secure VRAM..."
+    yield record_status("system", "Booting Deep Research Protocol...")
+    
+    async for event in deep_research_graph.astream(initial_state):
+        node_name = list(event.keys())[0]
+        current_state.update(event[node_name])
+        
+        if node_name == "librarian":
+            msg = "Historical context is sufficient. Bypassing live scrape." if current_state["is_sufficient"] else "Knowledge gap detected. Formulating search plan."
+            yield record_status("librarian", msg)
+        elif node_name == "chief_editor":
+            yield record_status("editor", "Target search queries generated.")
+        elif node_name == "scraper":
+            yield record_status("scraper", "Web data successfully extracted and vectorized.")
 
-                agent_statuses.append({"node": node_name, "message": msg})
-                yield f"data: {json.dumps({'type': 'status', 'node': node_name, 'message': msg})}\n\n"
+    yield record_status("synthesizer", "Synthesizing final report...")
+    
+    prompt = f"Analyze and answer comprehensively based on this validated data:\n\nUser Request: {current_state['query']}\n\nContext:\n{current_state['retrieved_context']}"
+    accumulated_response = ""
+    
+    async with httpx.AsyncClient() as client:
+        async with client.stream(
+            "POST",
+            settings.LOCAL_LLM_URL + "/chat/completions",
+            json={"messages": [{"role": "user", "content": prompt}], "temperature": 0.3, "stream": True},
+            timeout=90.0
+        ) as response:
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    data_str = line.replace("data: ", "")
+                    if data_str.strip() == "[DONE]": break
+                    try:
+                        chunk = json.loads(data_str)
+                        delta = chunk["choices"][0]["delta"].get("content", "")
+                        if delta:
+                            accumulated_response += delta
+                            yield f"data: {json.dumps({'type': 'delta', 'content': delta})}\n\n"
+                    except:
+                        pass
 
-                # When the final synthesis completes, yield the actual markdown report
-                if node_name == "synthesize":
-                    final_report_content = state_update.get("final_report", "")
-                    yield f"data: {json.dumps({'type': 'delta', 'content': final_report_content})}\n\n"
+    # 2. Commit the text AND the tracked statuses to SQLite
+    if accumulated_response.strip():
+        with Session(engine) as db_session:
+            db_message = Message(
+                thread_id=current_state["thread_id"],
+                role="agent",
+                content=accumulated_response,
+                statuses=json.dumps(tracked_statuses)
+            )
+            db_session.add(db_message)
+            db_session.commit()
 
-        # Commit generation to SQLite
-        with Session(engine) as fresh_session:
-            db_msg = fresh_session.get(Message, agent_msg_id)
-            if db_msg:
-                db_msg.content = final_report_content
-                db_msg.statuses = json.dumps(agent_statuses)
-                fresh_session.add(db_msg)
-            fresh_session.commit()
-
-    except Exception as e:
-        error_msg = f"Research execution failed: {str(e)}"
-        print(error_msg)
-        yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+    # 3. The Stream Kill Signal - Forces Next.js to lock the volatile state
+    yield "data: [DONE]\n\n"

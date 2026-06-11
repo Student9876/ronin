@@ -1,13 +1,21 @@
-from fastapi import FastAPI, APIRouter
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api import threads
-from src.api import router as agent_router # Import the new unified switchboard
+from src.config.database import create_db_and_tables
+from src.api.router import router as agent_router
+from src.api.threads import router as threads_router
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # This fires immediately on container bootup and recreates missing tables
+    create_db_and_tables()
+    yield
 
 app = FastAPI(
-    title="Ronin Core Engine",
-    description="Backend engine for orchestrating multi-agent workflows, including deep research and general chat.",
-    version="1.0.0"
+    title="Ronin Intelligence Platform Engine",
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -18,8 +26,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-api_v1 = APIRouter(prefix="/api/v1")
-api_v1.include_router(threads.router)
-api_v1.include_router(agent_router.router) # Mounts /api/v1/agent/stream
-
-app.include_router(api_v1)
+# Core Router Mounting
+app.include_router(agent_router, prefix="/api/v1")
+app.include_router(threads_router, prefix="/api/v1")

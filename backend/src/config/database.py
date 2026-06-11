@@ -1,30 +1,48 @@
-import json
 from datetime import datetime
 from typing import List, Optional
-from sqlmodel import Field, SQLModel, create_engine, Session
+from sqlmodel import SQLModel, Field, Relationship, create_engine, Session
 
-# --- MODELS ---
+# Import your agent configuration matrix securely
+from src.config.agent_config import settings
 
 class Thread(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    title: str = Field(default="New Research Thread")
+    title: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # Cascade relationships: Dropping a Thread object drops all related child rows
+    messages: List["Message"] = Relationship(
+        back_populates="thread", 
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
+    artifacts: List["ResearchArtifact"] = Relationship(
+        back_populates="thread", 
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
+    )
 
 class Message(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    thread_id: int = Field(foreign_key="thread.id", index=True)
-    role: str  # 'user' or 'agent'
+    thread_id: int = Field(foreign_key="thread.id")
+    role: str
     content: str
-    statuses: Optional[str] = Field(default="[]") # Stored as JSON string
+    statuses: str = Field(default="[]") # Stores LangGraph node tracking arrays as JSON strings
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    thread: Thread = Relationship(back_populates="messages")
 
-# --- ENGINE ---
+class ResearchArtifact(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    thread_id: int = Field(foreign_key="thread.id")
+    subtopic: str
+    url: str
+    title: str
+    content: str # Cleaned body content extracted by Trafilatura
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    thread: Thread = Relationship(back_populates="artifacts")
 
-sqlite_file_name = "ronin_database.db"
-sqlite_url = f"sqlite:///{sqlite_file_name}"
-
-connect_args = {"check_same_thread": False}
-engine = create_engine(sqlite_url, echo=False, connect_args=connect_args)
+# Engine initialization
+engine = create_engine(settings.DATABASE_URL, connect_args={"check_same_thread": False})
 
 def create_db_and_tables():
     SQLModel.metadata.create_all(engine)

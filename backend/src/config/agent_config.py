@@ -15,6 +15,7 @@ class AgentConfigMatrix(BaseSettings):
     LOCAL_LLM_URL: str = "http://host.docker.internal:1234/v1"
     SEARXNG_URL: str = "http://searxng:8080/search"
     QDRANT_URL: str = "http://qdrant:6333"
+    OLLAMA_EMBED_URL: str = "http://ollama:11434/api/embeddings" # <-- This is the missing line
     DATABASE_URL: str = "sqlite:///ronin_database.db"
 
     # Strict System Constraints Matrix
