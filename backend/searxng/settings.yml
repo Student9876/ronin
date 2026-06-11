@@ -4,7 +4,7 @@ use_default_settings: true
 server:
   port: 8080
   bind_address: "0.0.0.0"
-  secret_key: "ronin_secret_activation_key_change_this_in_production"
+  secret_key: "ronin_secret_key_change_me"
   image_proxy: true
 
 search:
@@ -39,13 +39,13 @@ engines:
     timeout: 2.0
     weight: 1.0
 
-  # - name: duckduckgo
-  #   engine: duckduckgo
-  #   shortcut: dd
-  #   categories: general
-  #   timeout: 4.0
-  #   weight: 1.0
-  #   disabled: false
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: dd
+    categories: general
+    timeout: 4.0
+    weight: 1.0
+    disabled: false
 
   # - name: google
   #   engine: google

@@ -3,7 +3,7 @@ from sqlmodel import Session, select
 from typing import List
 from pydantic import BaseModel
 
-from src.database import get_session, Thread, Message
+from src.config.database import get_session, Thread, Message
 
 router = APIRouter(prefix="/threads", tags=["Threads"])
 

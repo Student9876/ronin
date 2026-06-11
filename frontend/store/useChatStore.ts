@@ -11,6 +11,7 @@ export type Message = {
 export type RawMessage = Omit<Message, "statuses"> & { statuses?: string | null };
 
 export interface AgentSettings {
+    mode: "general" | "deep";
     searchDepth: "quick" | "comprehensive" | "exhaustive";
     strictness: "lenient" | "strict";
 }
@@ -39,14 +40,28 @@ export const useChatStore = create<ChatState>((set) => ({
     messages: [],
     isStreaming: false,
     settings: {
+        mode: "general", // Default to the faster, single-turn graph
         searchDepth: "comprehensive",
         strictness: "strict",
     },
 
     fetchThreads: async () => {
-        const res = await fetch(`${API_BASE}/threads/`);
-        const data = await res.json();
-        set({ threads: data });
+        try {
+            const res = await fetch(`${API_BASE}/threads/`);
+            const data = await res.json();
+
+            // Prevent the crash if backend returns an object or error instead of an array
+            if (!Array.isArray(data)) {
+                console.error("Backend did not return an array of threads:", data);
+                set({ threads: [] });
+                return;
+            }
+
+            set({ threads: data });
+        } catch (error) {
+            console.error("Network error fetching threads:", error);
+            set({ threads: [] });
+        }
     },
 
     createThread: async () => {
@@ -57,19 +72,17 @@ export const useChatStore = create<ChatState>((set) => ({
     },
 
     fetchMessages: async (threadId: number) => {
-        set({ messages: [] });  // Clear first
+        set({ messages: [] });
         try {
             const res = await fetch(`${API_BASE}/threads/${threadId}/messages`);
             const data = await res.json();
 
-            // Prevent the crash if the backend returns an error object instead of an array
             if (!Array.isArray(data)) {
                 console.error("Backend did not return an array of messages:", data);
                 set({ messages: [] });
                 return;
             }
 
-            // Parse the JSON string statuses coming from SQLite
             const parsedMessages = data.map((msg: RawMessage) => ({
                 ...msg,
                 statuses: msg.statuses ? JSON.parse(msg.statuses) : []
@@ -83,7 +96,6 @@ export const useChatStore = create<ChatState>((set) => ({
 
     addMessage: (msg: Message) =>
         set((state) => {
-            // Prevent adding duplicate IDs
             if (state.messages.find(m => m.id === msg.id)) {
                 return state;
             }
@@ -113,7 +125,6 @@ export const useChatStore = create<ChatState>((set) => ({
             await fetch(`${API_BASE}/threads/${threadId}`, { method: "DELETE" });
             set((state) => ({
                 threads: state.threads.filter((t) => t.id !== threadId),
-                // If the user deletes the active thread, clear the messages
                 messages: state.messages.length > 0 && state.messages[0].id.toString().includes(threadId.toString()) ? [] : state.messages
             }));
         } catch (error) {

@@ -50,9 +50,22 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
 
 					{/* Thread List */}
 					<div className="flex-1 overflow-y-auto p-3 flex flex-col gap-1">
-						{threads.map((thread) => (
-							<SidebarThread key={thread.id} thread={thread} isActive={pathname === `/chat/${thread.id}`} />
-						))}
+						{Array.isArray(threads) &&
+							threads.map((thread, index) => {
+								const safeKey = thread?.id ? thread.id : `temp-key-${index}`;
+
+								if (!thread?.id) {
+									console.warn("Malformed thread object detected from backend:", thread);
+								}
+
+								return (
+									<SidebarThread
+										key={safeKey}
+										thread={thread}
+										isActive={pathname === `/chat/${thread?.id}`}
+									/>
+								);
+							})}
 					</div>
 				</aside>
 

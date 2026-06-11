@@ -3,12 +3,24 @@
 import {useState, useRef, useEffect, use} from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import {Send, Loader2, CheckCircle2} from "lucide-react";
+import {Send, Loader2, CheckCircle2, Cpu} from "lucide-react";
 import {useChatStore} from "@/store/useChatStore";
 import type {Components} from "react-markdown";
 
 import {Prism as SyntaxHighlighter} from "react-syntax-highlighter";
 import {vscDarkPlus} from "react-syntax-highlighter/dist/esm/styles/prism";
+
+// Pure function to handle dynamic route resolution
+const getStreamUrl = (settings: any, threadId: number, query: string) => {
+	const base = "http://localhost:8000/api/v1/research";
+	const encodedQuery = encodeURIComponent(query);
+
+	if (settings.mode === "deep") {
+		return `${base}/deep/stream?thread_id=${threadId}&query=${encodedQuery}&depth=${settings.searchDepth}&strictness=${settings.strictness}`;
+	}
+	// General mode doesn't need depth/strictness parameters based on your backend router
+	return `${base}/general/stream?thread_id=${threadId}&query=${encodedQuery}`;
+};
 
 export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 	const resolvedParams = use(params);
@@ -17,14 +29,12 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 	const [query, setQuery] = useState("");
 	const bottomRef = useRef<HTMLDivElement>(null);
 
-	const {messages, fetchMessages, addMessage, updateAgentMessage, isStreaming, setStreaming, fetchThreads, settings} = useChatStore();
+	const {messages, fetchMessages, addMessage, updateAgentMessage, isStreaming, setStreaming, fetchThreads, settings, setSettings} = useChatStore();
 
-	// Load history when thread changes
 	useEffect(() => {
 		fetchMessages(threadId);
 	}, [threadId, fetchMessages]);
 
-	// Auto-scroll
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({behavior: "smooth"});
 	}, [messages]);
@@ -36,7 +46,6 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 		const userQuery = query;
 		const tempAgentId = `temp-${Date.now()}`;
 
-		// Just add the new messages - don't clear history
 		addMessage({id: Date.now().toString(), role: "user", content: userQuery});
 		addMessage({id: tempAgentId, role: "agent", content: "", statuses: []});
 
@@ -44,9 +53,18 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 		setStreaming(true);
 
 		try {
-			const response = await fetch(
-				`http://localhost:8000/api/v1/research/stream?thread_id=${threadId}&query=${encodeURIComponent(userQuery)}&depth=${settings.searchDepth}&strictness=${settings.strictness}`,
-			);
+			// Hit the new unified switchboard using a POST request
+			const response = await fetch("http://localhost:8000/api/v1/agent/stream", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					thread_id: threadId,
+					query: userQuery,
+					mode: settings.mode, // "general" or "deep"
+				}),
+			});
 
 			const body = response.body;
 			if (!body) {
@@ -55,21 +73,14 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 
 			const reader = response.body.getReader();
 			const decoder = new TextDecoder();
-
-			let buffer = ""; // Add a buffer to catch fragmented packets
+			let buffer = "";
 
 			while (true) {
 				const {done, value} = await reader.read();
 				if (done) break;
 
-				// Append new data to whatever was left over from the last read
 				buffer += decoder.decode(value, {stream: true});
-
-				// Split by the SSE terminator
 				const lines = buffer.split("\n\n");
-
-				// The last element is either an incomplete chunk or an empty string.
-				// Pop it off and keep it in the buffer for the next loop iteration.
 				buffer = lines.pop() || "";
 
 				for (const line of lines) {
@@ -92,14 +103,11 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 					}
 				}
 			}
-
-			// Refresh sidebar to update thread title based on the backend processing
 			fetchThreads();
 		} catch (error) {
 			console.error("Stream error:", error);
 		} finally {
 			setStreaming(false);
-			// Re-fetch to replace temp IDs with actual DB IDs
 			fetchMessages(threadId);
 		}
 	};
@@ -113,7 +121,6 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 			<main className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8">
 				<div className="max-w-3xl mx-auto space-y-8">
 					{messages.map((msg, msgIndex) => {
-						// Check if this specific message is the active one at the bottom of the screen
 						const isLastMessage = msgIndex === messages.length - 1;
 
 						return (
@@ -128,7 +135,6 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 											<div className="flex flex-col space-y-2 border-l-2 border-neutral-800 pl-4 py-2">
 												{msg.statuses.map((status, idx) => (
 													<div key={idx} className="flex items-center space-x-3 text-sm text-neutral-400 font-mono">
-														{/* THE FIX: Only spin if it's the last status AND streaming AND the active message */}
 														{idx === msg.statuses!.length - 1 && isStreaming && isLastMessage ? (
 															<Loader2 className="w-4 h-4 animate-spin text-blue-500" />
 														) : (
@@ -234,14 +240,29 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 			</main>
 
 			<footer className="p-4 md:p-6 bg-neutral-950 border-t border-neutral-900">
-				<form onSubmit={handleSubmit} className="max-w-3xl mx-auto relative flex items-center">
+				<form
+					onSubmit={handleSubmit}
+					className="max-w-3xl mx-auto relative flex items-center bg-neutral-900 border border-neutral-800 rounded-xl transition-all focus-within:ring-1 focus-within:ring-neutral-700">
+					{/* Engine Mode Selector */}
+					<div className="pl-3 pr-2 flex items-center border-r border-neutral-800">
+						<Cpu className="w-4 h-4 text-neutral-500 mr-2" />
+						<select
+							value={settings.mode}
+							onChange={(e) => setSettings({mode: e.target.value as "general" | "deep"})}
+							disabled={isStreaming}
+							className="bg-transparent text-sm text-neutral-300 focus:outline-none disabled:opacity-50 appearance-none cursor-pointer">
+							<option value="general">General</option>
+							<option value="deep">Deep Research</option>
+						</select>
+					</div>
+
 					<input
 						type="text"
 						value={query}
 						onChange={(e) => setQuery(e.target.value)}
 						disabled={isStreaming}
-						placeholder="Deploy research agent..."
-						className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-4 pr-14 text-neutral-200 placeholder:text-neutral-600 focus:outline-none focus:ring-1 focus:ring-neutral-700 disabled:opacity-50 transition-all"
+						placeholder={settings.mode === "deep" ? "Deploy multi-agent research..." : "Ask a general question..."}
+						className="w-full bg-transparent px-4 py-4 pr-14 text-neutral-200 placeholder:text-neutral-600 focus:outline-none disabled:opacity-50"
 					/>
 					<button
 						type="submit"
