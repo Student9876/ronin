@@ -84,7 +84,6 @@ async def concurrent_scraper(state: DeepResearchState):
     queries = state["research_queries"]
     new_scraped_text_blocks = []
     
-    # Instantiate our centralized, footprint-guarded network utility
     async with get_http_client() as client:
         for q in queries:
             try:
@@ -97,7 +96,8 @@ async def concurrent_scraper(state: DeepResearchState):
                     
                     full_text = await ingest_url(thread_id=state["thread_id"], subtopic=q, url=url)
                     if not full_text.startswith("Failed") and not full_text.startswith("No parseable"):
-                        new_scraped_text_blocks.append(full_text)
+                        # FIX: Explicitly bind the source URL to the text block so the LLM can reference it
+                        new_scraped_text_blocks.append(f"Source: {url}\nContent: {full_text}")
             except Exception as e:
                 print(f"Scraper error parsing network data: {e}")
 
@@ -155,7 +155,18 @@ async def stream_research(payload: Any, mode_cfg: Any):
 
     yield format_status("synthesizer", "Synthesizing final report...")
     
-    prompt = f"Analyze and answer comprehensively based on this validated data:\n\nUser Request: {current_state['query']}\n\nContext:\n{current_state['retrieved_context']}"
+    # FIX: Aggressive prompting to enforce inline markdown citations
+    prompt = f"""You are a technical research analyst. Synthesize a comprehensive answer based strictly on the provided Context.
+
+CRITICAL REQUIREMENT: Every factual claim, specification, or step MUST be immediately followed by an inline markdown citation pointing to the source URL.
+Format your citations seamlessly within the text, for example: [source](the-url-from-context) or [1](the-url-from-context).
+Do not append a generic list of links at the bottom; embed the URLs natively where the information is used.
+
+User Request: {current_state['query']}
+
+Context:
+{current_state['retrieved_context']}
+"""
     
     async with httpx.AsyncClient() as client:
         async with client.stream(
