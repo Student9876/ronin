@@ -3,14 +3,11 @@ import httpx
 from typing import List, Dict, Any, Literal
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
-from sqlalchemy.orm import Session
 
 from src.config.agent_config import settings
 from src.agent.tools.vector_store import VectorManager
 from src.agent.tools.ingestion import ingest_url
 from src.utils.network import get_http_client
-
-from src.config.database import engine, Message
 
 # Initialize our reusable vector client
 research_vectors = VectorManager("research_nodes")
@@ -124,8 +121,8 @@ workflow.add_edge("scraper", END)
 
 deep_research_graph = workflow.compile()
 
-# --- Unified Streaming Interface (The Orchestrator) ---
-async def stream_research(payload: Any, mode_cfg: Any, session: Any):
+# --- Unified Streaming Interface (Pure Orchestrator) ---
+async def stream_research(payload: Any, mode_cfg: Any):
     initial_state = {
         "thread_id": payload.thread_id,
         "query": payload.query,
@@ -138,15 +135,11 @@ async def stream_research(payload: Any, mode_cfg: Any, session: Any):
     
     current_state = initial_state.copy()
     
-    # 1. State Tracking Array for SQLite Persistence
-    tracked_statuses = []
+    # Helper to construct proper Server Sent Events
+    def format_status(node_name: str, message: str):
+        return f"data: {json.dumps({'type': 'status', 'node': node_name, 'message': message})}\n\n"
 
-    def record_status(node_name: str, message: str):
-        status_obj = {"type": "status", "node": node_name, "message": message}
-        tracked_statuses.append(status_obj)
-        return f"data: {json.dumps(status_obj)}\n\n"
-
-    yield record_status("system", "Booting Deep Research Protocol...")
+    yield format_status("system", "Booting Deep Research Protocol...")
     
     async for event in deep_research_graph.astream(initial_state):
         node_name = list(event.keys())[0]
@@ -154,16 +147,15 @@ async def stream_research(payload: Any, mode_cfg: Any, session: Any):
         
         if node_name == "librarian":
             msg = "Historical context is sufficient. Bypassing live scrape." if current_state["is_sufficient"] else "Knowledge gap detected. Formulating search plan."
-            yield record_status("librarian", msg)
+            yield format_status("librarian", msg)
         elif node_name == "chief_editor":
-            yield record_status("editor", "Target search queries generated.")
+            yield format_status("editor", "Target search queries generated.")
         elif node_name == "scraper":
-            yield record_status("scraper", "Web data successfully extracted and vectorized.")
+            yield format_status("scraper", "Web data successfully extracted and vectorized.")
 
-    yield record_status("synthesizer", "Synthesizing final report...")
+    yield format_status("synthesizer", "Synthesizing final report...")
     
     prompt = f"Analyze and answer comprehensively based on this validated data:\n\nUser Request: {current_state['query']}\n\nContext:\n{current_state['retrieved_context']}"
-    accumulated_response = ""
     
     async with httpx.AsyncClient() as client:
         async with client.stream(
@@ -180,22 +172,10 @@ async def stream_research(payload: Any, mode_cfg: Any, session: Any):
                         chunk = json.loads(data_str)
                         delta = chunk["choices"][0]["delta"].get("content", "")
                         if delta:
-                            accumulated_response += delta
+                            # We just blindly yield the delta string; the router wrapper handles all the saving
                             yield f"data: {json.dumps({'type': 'delta', 'content': delta})}\n\n"
                     except:
                         pass
 
-    # 2. Commit the text AND the tracked statuses to SQLite
-    if accumulated_response.strip():
-        with Session(engine) as db_session:
-            db_message = Message(
-                thread_id=current_state["thread_id"],
-                role="agent",
-                content=accumulated_response,
-                statuses=json.dumps(tracked_statuses)
-            )
-            db_session.add(db_message)
-            db_session.commit()
-
-    # 3. The Stream Kill Signal - Forces Next.js to lock the volatile state
+    # The Stream Kill Signal - Forces the UI and router wrapper to lock states
     yield "data: [DONE]\n\n"

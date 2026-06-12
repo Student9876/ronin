@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 from sqlmodel import SQLModel, Field, Relationship, create_engine, Session
 
-# Import your agent configuration matrix securely
+# agent configuration matrix
 from src.config.agent_config import settings
 
 class Thread(SQLModel, table=True):

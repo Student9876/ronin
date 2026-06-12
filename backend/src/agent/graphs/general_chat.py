@@ -5,13 +5,11 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.config.agent_config import settings
-from src.config.database import Message, engine
-from sqlmodel import Session
 
 # Initialize local LLM client globally for this module
 client = AsyncOpenAI(base_url=settings.LOCAL_LLM_URL, api_key="lm-studio")
 
-# Initialize LangGraph Checkpointer
+# Initialize LangGraph Checkpointer (In-memory state for context management)
 memory = MemorySaver()
 
 class MemoryState(TypedDict):
@@ -69,21 +67,12 @@ workflow.add_edge("compact_history", END)
 
 memory_app = workflow.compile(checkpointer=memory)
 
-async def stream_chat(payload: Any, mode_cfg: Any, session: Session):
-    """The foreground stream handler triggered by the FastAPI router."""
+async def stream_chat(payload: Any, mode_cfg: Any):
+    """The foreground stream handler triggered by the FastAPI router wrapper."""
     thread_id = payload.thread_id
     query = payload.query
     
-    # 1. Commit empty agent message to SQLite for UI tracking
-    user_msg_db = Message(thread_id=thread_id, role="user", content=query)
-    session.add(user_msg_db)
-    
-    agent_msg_db = Message(thread_id=thread_id, role="agent", content="", statuses="[]")
-    session.add(agent_msg_db)
-    session.commit()
-    agent_msg_id = agent_msg_db.id
-    
-    # 2. Retrieve the active context from LangGraph Checkpointer
+    # 1. Retrieve the active context from LangGraph Checkpointer
     config = {"configurable": {"thread_id": str(thread_id)}}
     state_snapshot = memory_app.get_state(config)
     current_state = state_snapshot.values if state_snapshot else {}
@@ -91,7 +80,7 @@ async def stream_chat(payload: Any, mode_cfg: Any, session: Session):
     summary = current_state.get("summary", "")
     past_messages = current_state.get("messages", [])
     
-    # 3. Build VRAM-Optimized Prompt Block
+    # 2. Build VRAM-Optimized Prompt Block
     llm_messages = [{"role": "system", "content": mode_cfg.system_prompt}]
     
     if summary:
@@ -100,7 +89,7 @@ async def stream_chat(payload: Any, mode_cfg: Any, session: Session):
     llm_messages.extend(past_messages)
     llm_messages.append({"role": "user", "content": query})
     
-    # 4. Stream response back to the Next.js UI
+    # 3. Stream response back to the Next.js UI via the router wrapper
     final_content = ""
     try:
         response_stream = await client.chat.completions.create(
@@ -120,17 +109,10 @@ async def stream_chat(payload: Any, mode_cfg: Any, session: Session):
     except Exception as e:
         error_msg = f"Local LLM streaming error: {str(e)}"
         yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+        yield "data: [DONE]\n\n"
         return
         
-    # 5. Save the complete generation to SQLite
-    with Session(engine) as fresh_session:
-        db_msg = fresh_session.get(Message, agent_msg_id)
-        if db_msg:
-            db_msg.content = final_content
-            fresh_session.add(db_msg)
-        fresh_session.commit()
-        
-    # 6. Push the new interaction into LangGraph to trigger background memory management
+    # 4. Push the new interaction into LangGraph to trigger background memory management
     new_past_messages = past_messages + [
         {"role": "user", "content": query},
         {"role": "assistant", "content": final_content}
@@ -142,3 +124,6 @@ async def stream_chat(payload: Any, mode_cfg: Any, session: Session):
         {"summary": summary, "messages": new_past_messages},
         config=config
     )
+
+    # 5. The Stream Kill Signal - Forces the UI and router wrapper to lock states and commit to SQLite
+    yield "data: [DONE]\n\n"
