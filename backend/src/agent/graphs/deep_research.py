@@ -8,6 +8,7 @@ from src.config.agent_config import settings
 from src.utils.network import get_http_client
 from src.agent.tools.ingestion import ingest_url
 from src.agent.graphs.general_chat import memory_app
+from src.utils.llm_client import call_local_llm_structured
 
 # --- Structured Output Schemas ---
 class ResearchChecklist(BaseModel):
@@ -29,103 +30,7 @@ class DeepResearchState(TypedDict):
     evaluation_attempts: int
     scraped_text: str  # Temporary buffer for the evaluator
     current_url: str   # Tagged URL for the current scrape
-    verified_facts: List[Dict[str, str]]
-
-# --- Local LLM JSON Helper ---
-# --- Structural-Agnostic JSON Helper ---
-async def call_local_llm_structured(system_prompt: str, user_prompt: str, response_model: Any) -> Any:
-    """Forces the local 8B model to return JSON and aggressively extracts data even if the model echoes the schema."""
-    schema_json = response_model.schema_json() if hasattr(response_model, "schema_json") else response_model.model_json_schema()
-    enforced_system = f"{system_prompt}\n\nYou MUST respond strictly in valid JSON matching this schema format:\n{schema_json}\nReturn ONLY the JSON object, no conversational text."
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            settings.LOCAL_LLM_URL + "/chat/completions",
-            json={
-                "messages": [
-                    {"role": "system", "content": enforced_system},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.1
-            },
-            timeout=60.0
-        )
-        response.raise_for_status()
-        
-        raw_json = response.json()["choices"][0]["message"]["content"].strip()
-        
-        # 1. Strip markdown wrapping
-        if "```json" in raw_json:
-            raw_json = raw_json.split("```json")[1].split("```")[0].strip()
-        elif "```" in raw_json:
-            raw_json = raw_json.split("```")[1].split("```")[0].strip()
-            
-        # 2. THE FIX: Isolate the core JSON object to drop conversational trailing text
-        start_idx = raw_json.find('{')
-        end_idx = raw_json.rfind('}')
-        if start_idx != -1 and end_idx != -1:
-            raw_json = raw_json[start_idx:end_idx+1]
-            
-        try:
-            parsed_data = json.loads(raw_json)
-        except Exception as e:
-            print(f"Raw JSON parsing failed: {e}. Falling back to emergency initialization.")
-            if response_model.__name__ == "ResearchChecklist":
-                fallback_queries = [
-                    user_prompt,
-                    f"{user_prompt} in-depth specifications",
-                    f"{user_prompt} reddit reviews",
-                ]
-                return response_model(sub_queries=fallback_queries)
-            return response_model(sub_queries=[user_prompt])
-
-        # Aggressive deep scanner to pull queries out of any schema-echoing dictionary structures
-        def find_sub_queries_deep(d: Any) -> List[str]:
-            if isinstance(d, dict):
-                # Scenario 1: Correct structural extraction or partially corrected keys
-                if "sub_queries" in d and isinstance(d["sub_queries"], list):
-                    return [str(x) for x in d["sub_queries"]]
-                # Scenario 2: Model echoed the schema properties and hid the values in 'default'
-                if "sub_queries" in d and isinstance(d["sub_queries"], dict):
-                    sq = d["sub_queries"]
-                    if "default" in sq and isinstance(sq["default"], list):
-                        return [str(x) for x in sq["default"]]
-                    if "example" in sq and isinstance(sq["example"], list):
-                        return [str(x) for x in sq["example"]]
-                if "default" in d and isinstance(d["default"], list):
-                    return [str(x) for x in d["default"]]
-                # Deep traverse values
-                for val in d.values():
-                    found = find_sub_queries_deep(val)
-                    if found:
-                        return found
-            elif isinstance(d, list):
-                if all(isinstance(x, str) for x in d) and len(d) > 0:
-                    return d
-                for item in d:
-                    found = find_sub_queries_deep(item)
-                    if found:
-                        return found
-            return []
-
-        # If we are resolving the planner node checklist path, apply the deep query scanner
-        if response_model.__name__ == "ResearchChecklist":
-            extracted_queries = find_sub_queries_deep(parsed_data)
-            if extracted_queries:
-                return response_model(sub_queries=extracted_queries[:3])
-            
-        # Standard structural fallback for non-checklist schemas (e.g., FactEvaluation)
-        try:
-            if hasattr(response_model, "model_validate"):
-                return response_model.model_validate(parsed_data)
-            return response_model.parse_obj(parsed_data)
-        except Exception:
-            if "properties" in parsed_data:
-                parsed_data = parsed_data["properties"]
-            if hasattr(response_model, "model_validate"):
-                return response_model.model_validate(parsed_data)
-            return response_model.parse_obj(parsed_data)
-        
+    verified_facts: List[Dict[str, str]]       
 
 # --- The Graph Nodes ---
 async def planner_node(state: DeepResearchState):
