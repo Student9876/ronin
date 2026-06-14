@@ -6,7 +6,15 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./searxng:/etc/searxng
+      - ./backend/searxng:/etc/searxng:rw
+      - searxng_cache:/var/cache/searxng
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_BIND_ADDRESS=0.0.0.0
+      - SEARXNG_PORT=8080
+      - SEARXNG_LIMITER=false
+      - SEARXNG_METHOD=GET
+      - SEARXNG_SECRET=ronin_secret_key_change_me
     restart: always
 
   ronin_agent:
@@ -17,7 +25,7 @@ services:
     volumes:
       - ./backend:/app
     environment:
-      - SEARXNG_URL=http://searxng:8080
+      - SEARXNG_URL=http://searxng:8080/search # REQUIRED: Point directly to the search API path
     depends_on:
       - searxng
       - qdrant
@@ -47,3 +55,4 @@ services:
 volumes:
   qdrant_storage:
   ollama_storage:
+  searxng_cache:

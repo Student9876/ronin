@@ -87,9 +87,19 @@ async def stream_chat(payload: Any, mode_cfg: Any):
     try:
         yield f"data: {json.dumps({'type': 'status', 'node': 'web_search', 'message': 'Searching the web for real-time data...'})}\n\n"
         
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json"
+        }
+
         async with get_http_client() as network_client:
-            search_res = await network_client.get(settings.SEARXNG_URL, params={"q": query, "format": "json"})
-            results = search_res.json().get("results", [])[:2]
+            search_res = await network_client.get(settings.SEARXNG_URL, params={"q": query, "format": "json"}, headers=headers)
+            results = []
+            if search_res.status_code == 200:
+                try:
+                    results = search_res.json().get("results", [])[:2]
+                except Exception as e:
+                    print(f"General mode search JSON parse failed: {e}")
             
             idx = 1
             blocks = []

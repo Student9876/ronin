@@ -6,6 +6,10 @@ server:
   bind_address: "0.0.0.0"
   secret_key: "ronin_secret_key_change_me"
   image_proxy: true
+  limiter: false
+  real_ip:
+    - 127.0.0.1
+    - 172.20.0.0/16         # <--- ALLOWS local Docker containers to pass traffic
 
 search:
   safe_search: 0
@@ -23,14 +27,15 @@ engines:
     categories: general
     timeout: 3.0
     weight: 1.0
-
+    disabled: false
+    
   - name: brave
     engine: brave
     shortcut: br
     categories: general
     timeout: 3.0
     weight: 1.5
-    disabled: true
+    disabled: false
 
   - name: qwant
     engine: qwant
@@ -38,6 +43,7 @@ engines:
     categories: general
     timeout: 2.0
     weight: 1.0
+    disabled: false
 
   - name: duckduckgo
     engine: duckduckgo
@@ -47,15 +53,13 @@ engines:
     weight: 1.0
     disabled: false
 
-  # - name: google
-  #   engine: google
-  #   shortcut: go
-  #   categories: general
-  #   timeout: 5.0
-  #   weight: 1.0
-  #   # Disabled by default because Google flags local data-center IPs instantly. 
-  #   # Use Brave and Bing as your primary workhorses.
-  #   disabled: true 
+  - name: google
+    engine: google
+    shortcut: go
+    categories: general
+    timeout: 5.0
+    weight: 1.0
+    disabled: false 
 
   # - name: wikipedia
   #   engine: wikipedia
