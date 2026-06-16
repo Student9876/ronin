@@ -10,6 +10,13 @@ export type Message = {
 };
 export type RawMessage = Omit<Message, "statuses"> & { statuses?: string | null };
 
+export type AgentEvent = {
+    id: string;
+    node: string;
+    msg: string;
+    time: string;
+};
+
 export interface AgentSettings {
     mode: "general" | "deep";
     searchDepth: "quick" | "comprehensive" | "exhaustive";
@@ -19,6 +26,9 @@ export interface AgentSettings {
 interface ChatState {
     threads: Thread[];
     messages: Message[];
+    events: AgentEvent[];
+    agentState: any;
+    tools: any[];
     isStreaming: boolean;
     settings: AgentSettings;
     fetchThreads: () => Promise<void>;
@@ -31,6 +41,10 @@ interface ChatState {
     clearMessages: () => void;
     deleteThread: (id: number) => Promise<void>;
     renameThread: (id: number, title: string) => Promise<void>;
+    addEvent: (event: AgentEvent) => void;
+    setAgentState: (state: any) => void;
+    addTool: (tool: any) => void;
+    clearTelemetry: () => void;
 }
 
 const API_BASE = "http://localhost:8000/api/v1";
@@ -38,6 +52,9 @@ const API_BASE = "http://localhost:8000/api/v1";
 export const useChatStore = create<ChatState>((set) => ({
     threads: [],
     messages: [],
+    events: [],
+    agentState: null,
+    tools: [],
     isStreaming: false,
     settings: {
         mode: "general", // Default to the faster, single-turn graph
@@ -147,4 +164,9 @@ export const useChatStore = create<ChatState>((set) => ({
             console.error("Failed to rename thread:", error);
         }
     },
+
+    addEvent: (event) => set((state) => ({ events: [...state.events, event] })),
+    setAgentState: (agentState) => set({ agentState }),
+    addTool: (tool) => set((state) => ({ tools: [...state.tools, tool] })),
+    clearTelemetry: () => set({ events: [], agentState: null, tools: [] }),
 }));

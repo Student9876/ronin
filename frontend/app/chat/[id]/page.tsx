@@ -2,38 +2,56 @@
 
 import {useState, useRef, useEffect, use} from "react";
 import {useChatStore} from "@/store/useChatStore";
-import {MessageBubble} from "@/components/chat/MessageBubble";
-import {ChatInput} from "@/components/chat/ChatInput";
+import {ChatPane} from "@/components/chat/ChatPane";
+import {PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen} from "lucide-react";
+import {useSearchParams, useRouter} from "next/navigation";
+import {InspectorPane} from "@/components/chat/InspectorPane";
+import {Sidebar} from "@/components/chat/Sidebar";
 
 export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 	const resolvedParams = use(params);
 	const threadId = parseInt(resolvedParams.id, 10);
 
-	const [query, setQuery] = useState("");
-	const bottomRef = useRef<HTMLDivElement>(null);
+	const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+	const [isInspectorOpen, setIsInspectorOpen] = useState(true);
 
-	const {messages, fetchMessages, addMessage, updateAgentMessage, isStreaming, setStreaming, fetchThreads, settings, setSettings} = useChatStore();
+	const {
+		messages, fetchMessages, addMessage, updateAgentMessage, 
+		isStreaming, setStreaming, fetchThreads, settings, setSettings,
+		events, agentState, tools, addEvent, setAgentState, addTool, clearTelemetry
+	} = useChatStore();
 
 	useEffect(() => {
 		fetchMessages(threadId);
 	}, [threadId, fetchMessages]);
 
+	const searchParams = useSearchParams();
+	const router = useRouter();
+	const hasInitialized = useRef(false);
+
 	useEffect(() => {
-		bottomRef.current?.scrollIntoView({behavior: "smooth"});
-	}, [messages]);
+		const initialQuery = searchParams.get("q");
+		const initialMode = searchParams.get("m");
+		
+		if (initialQuery && !hasInitialized.current) {
+			hasInitialized.current = true;
+			setTimeout(() => {
+				executeStream(initialQuery, initialMode || settings.mode);
+				router.replace(`/chat/${threadId}`);
+			}, 100);
+		}
+	}, [searchParams, router, threadId, settings.mode]);
 
-	const handleSubmit = async (e: React.FormEvent) => {
-		e.preventDefault();
-		if (!query.trim() || isStreaming) return;
+	const executeStream = async (userQuery: string, modeToUse: string) => {
+		if (!userQuery.trim() || isStreaming) return;
 
-		const userQuery = query;
 		const tempAgentId = `temp-${Date.now()}`;
 
 		addMessage({id: Date.now().toString(), role: "user", content: userQuery});
 		addMessage({id: tempAgentId, role: "agent", content: "", statuses: []});
 
-		setQuery("");
 		setStreaming(true);
+		clearTelemetry();
 
 		try {
 			const response = await fetch("http://localhost:8000/api/v1/agent/stream", {
@@ -42,7 +60,7 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 				body: JSON.stringify({
 					thread_id: threadId,
 					query: userQuery,
-					mode: settings.mode,
+					mode: modeToUse,
 				}),
 			});
 
@@ -77,8 +95,18 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 							const data = JSON.parse(dataStr);
 							if (data.type === "status") {
 								updateAgentMessage(tempAgentId, "", {node: data.node, message: data.message});
+								addEvent({
+									id: Date.now().toString() + Math.random(),
+									node: data.node,
+									msg: data.message,
+									time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+								});
 							} else if (data.type === "delta") {
 								updateAgentMessage(tempAgentId, data.content);
+							} else if (data.type === "state") {
+								setAgentState(data.data);
+							} else if (data.type === "tool") {
+								addTool(data.data);
 							} else if (data.type === "error") {
 								updateAgentMessage(tempAgentId, `\n\n**System Error:** ${data.message}`);
 							}
@@ -98,21 +126,37 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 	};
 
 	return (
-		<div className="flex flex-col h-full">
-			<header className="flex items-center justify-center py-4 border-b border-neutral-800 bg-neutral-900/50">
-				<h1 className="text-sm font-semibold tracking-widest text-neutral-400 uppercase">Research Session {threadId}</h1>
-			</header>
+		<div className="flex h-screen w-full bg-slate-50 text-slate-900 overflow-hidden m-0 p-0">
+			{/* LEFT PANE */}
+			<div
+				className={`${
+					isSidebarOpen ? "w-64" : "w-0"
+				} transition-all duration-300 ease-in-out border-r border-slate-200 bg-slate-50 overflow-hidden flex-shrink-0`}>
+				<Sidebar />
+			</div>
 
-			<main className="flex-1 overflow-y-auto p-4 md:p-8 space-y-8">
-				<div className="max-w-3xl mx-auto space-y-8">
-					{messages.map((msg, msgIndex) => (
-						<MessageBubble key={msg.id} msg={msg} isLastMessage={msgIndex === messages.length - 1} isStreaming={isStreaming} />
-					))}
-					<div ref={bottomRef} />
+			{/* CENTER PANE */}
+			<div className="flex-1 flex flex-col min-w-0 relative bg-white">
+				<header className="h-14 border-b border-slate-200 flex items-center justify-between px-4 bg-white z-10 flex-shrink-0">
+					<button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-slate-100 rounded-md text-slate-500 transition-colors">
+						{isSidebarOpen ? <PanelLeftClose size={20} /> : <PanelLeftOpen size={20} />}
+					</button>
+					<h1 className="font-semibold text-slate-700 tracking-tight">Research Session {threadId}</h1>
+					<button onClick={() => setIsInspectorOpen(!isInspectorOpen)} className="p-2 hover:bg-slate-100 rounded-md text-slate-500 transition-colors">
+						{isInspectorOpen ? <PanelRightClose size={20} /> : <PanelRightOpen size={20} />}
+					</button>
+				</header>
+
+				<div className="flex-1 min-h-0 w-full relative flex flex-col">
+					<ChatPane messages={messages} isStreaming={isStreaming} onSubmit={(q: string, m: string) => executeStream(q, m)} />
 				</div>
-			</main>
+			</div>
 
-			<ChatInput query={query} setQuery={setQuery} handleSubmit={handleSubmit} isStreaming={isStreaming} settings={settings} setSettings={setSettings} />
+			{/* RIGHT PANE */}
+			<div
+				className={`${isInspectorOpen ? "w-[450px]" : "w-0"} transition-all duration-300 border-l border-slate-200 bg-slate-50 overflow-hidden flex-shrink-0`}>
+				<InspectorPane isOpen={isInspectorOpen} events={events} agentState={agentState} tools={tools} />
+			</div>
 		</div>
 	);
 }

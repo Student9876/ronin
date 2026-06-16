@@ -18,12 +18,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# --- CORS BLOCK ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000"], # Whitelist your Next.js dev server
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # Allow POST, GET, OPTIONS, etc.
+    allow_headers=["*"], # Allow all headers
 )
 
 # Core Router Mounting
