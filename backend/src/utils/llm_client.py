@@ -11,8 +11,10 @@ def _salvage_queries(raw_text: str, default_query: str) -> List[str]:
     match = re.search(r'\[(.*?)\]', raw_text, re.DOTALL)
     if match:
         items = re.findall(r'"([^"]+)"', match.group(1))
-        if len(items) >= 1:
-            return items[:3]
+        # Filter out schema placeholders
+        valid_items = [x for x in items if x != "sub_queries" and len(x.strip()) > 0]
+        if len(valid_items) >= 1:
+            return valid_items[:3]
             
     # 2. Stop-word keyword extraction (Drops "I", "am", "what", "are", etc.)
     stop_words = {"i", "am", "is", "are", "what", "how", "the", "a", "an", "to", "for", "with", "on", "in", "of", "and", "my", "build", "planning", "intend", "run", "as", "daily", "driver"}
@@ -47,18 +49,22 @@ def _find_list_deep(d: Any, target_key: str = "sub_queries") -> List[str]:
             
         if target_key in d and isinstance(d[target_key], list):
             # 2. Prevent extracting the property name if the model echoed it
-            if d[target_key] != [target_key]:
-                return [str(x) for x in d[target_key]]
+            cleaned = [str(x) for x in d[target_key] if str(x) != target_key]
+            if cleaned:
+                return cleaned
                 
         if target_key in d and isinstance(d[target_key], dict):
             sq = d[target_key]
             if "default" in sq and isinstance(sq["default"], list):
-                return [str(x) for x in sq["default"]]
+                cleaned = [str(x) for x in sq["default"] if str(x) != target_key]
+                if cleaned: return cleaned
             if "example" in sq and isinstance(sq["example"], list):
-                return [str(x) for x in sq["example"]]
+                cleaned = [str(x) for x in sq["example"] if str(x) != target_key]
+                if cleaned: return cleaned
                 
         if "default" in d and isinstance(d["default"], list):
-            return [str(x) for x in d["default"]]
+            cleaned = [str(x) for x in d["default"] if str(x) != target_key]
+            if cleaned: return cleaned
             
         for key, val in d.items():
             # 3. CRITICAL: Never extract the "required" array from a schema string
@@ -71,8 +77,9 @@ def _find_list_deep(d: Any, target_key: str = "sub_queries") -> List[str]:
     elif isinstance(d, list):
         if all(isinstance(x, str) for x in d) and len(d) > 0:
             # 4. A real search query is longer than a single schema word
-            if d != [target_key] and len(d[0]) > 3:
-                return d
+            cleaned = [x for x in d if x != target_key]
+            if cleaned and len(cleaned[0]) > 3:
+                return cleaned
         for item in d:
             found = _find_list_deep(item, target_key)
             if found:

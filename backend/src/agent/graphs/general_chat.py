@@ -58,8 +58,14 @@ async def stream_chat(payload: Any, mode_cfg: Any):
             
             if blocks:
                 scraped_context = "\n\n".join(blocks)
+                
+            # Yield tool telemetry event
+            yield f"data: {json.dumps({'type': 'tool', 'data': {'name': 'SearXNG Web Search & Scrape', 'status': 'completed', 'input': {'query': query}, 'output': f'Successfully scraped {len(source_links)} source URLs: ' + ', '.join([l['url'] for l in source_links])}})}\n\n"
     except Exception as e:
         print(f"General mode live web lookup fallback: {e}")
+
+    # Yield state telemetry event
+    yield f"data: {json.dumps({'type': 'state', 'data': {'thread_id': thread_id, 'query': query, 'summary': summary, 'sources_scraped': len(source_links)}})}\n\n"
 
     # 3. Build VRAM-Optimized Prompt Block with Strict Citation Mandate
     system_prompt = mode_cfg.system_prompt

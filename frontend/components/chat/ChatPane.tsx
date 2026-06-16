@@ -2,7 +2,7 @@
 
 import {useState, useRef, useEffect} from "react";
 import {Send, User, TerminalSquare, MessageSquare, Microscope} from "lucide-react";
-import {MarkdownRenderer} from "../MarkdownRenderer";
+import {MessageBubble} from "./MessageBubble";
 
 export type Message = {
 	id: string;
@@ -52,7 +52,7 @@ export function ChatPane({messages, isStreaming, onSubmit}: any) {
 		<div className="flex flex-col h-full w-full bg-white relative">
 			{/* Message Feed Area */}
 			<div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-				{messages.map((msg: Message) => (
+				{messages.map((msg: Message, index: number) => (
 					<div key={msg.id} className={`flex gap-4 max-w-4xl mx-auto ${msg.role === "user" ? "flex-row-reverse" : "flex-row"}`}>
 						<div
 							className={`flex-shrink-0 flex items-center justify-center h-8 w-8 rounded-full ${
@@ -61,15 +61,12 @@ export function ChatPane({messages, isStreaming, onSubmit}: any) {
 							{msg.role === "user" ? <User size={18} /> : <TerminalSquare size={18} />}
 						</div>
 
-						<div className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"} max-w-[80%]`}>
-							<div
-								className={`px-4 py-3 rounded-2xl ${
-									msg.role === "user" ? "bg-slate-100 text-slate-800 rounded-tr-sm" : "bg-transparent text-slate-800"
-								}`}>
-								<div className="leading-relaxed text-[15px] prose prose-slate max-w-none">
-									<MarkdownRenderer content={msg.content} />
-								</div>
-							</div>
+						<div className="flex-1 min-w-0">
+							<MessageBubble 
+								msg={msg} 
+								isLastMessage={index === messages.length - 1} 
+								isStreaming={isStreaming} 
+							/>
 						</div>
 					</div>
 				))}

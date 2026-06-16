@@ -61,6 +61,8 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 					thread_id: threadId,
 					query: userQuery,
 					mode: modeToUse,
+					search_depth: settings.searchDepth,
+					strictness: settings.strictness,
 				}),
 			});
 

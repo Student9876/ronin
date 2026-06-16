@@ -4,6 +4,11 @@ from typing import List
 from pydantic import BaseModel
 
 from src.config.database import get_session, Thread, Message
+from src.agent.tools.vector_store import VectorManager
+
+# Instantiate the vector manager for thread purging
+research_vectors = VectorManager("research_nodes")
+
 
 router = APIRouter(prefix="/threads", tags=["Threads"])
 
@@ -63,4 +68,11 @@ def delete_thread(thread_id: int, session: Session = Depends(get_session)):
         
     session.delete(thread)
     session.commit()
+    
+    # Purge vectors from Qdrant to prevent memory leak
+    try:
+        research_vectors.purge_thread(thread_id)
+    except Exception as e:
+        print(f"Qdrant thread purge failed: {e}")
+
     return {"ok": True}

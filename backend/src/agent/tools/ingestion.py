@@ -1,3 +1,4 @@
+import asyncio
 import trafilatura
 from typing import List, Dict, Any
 from sqlmodel import Session
@@ -30,17 +31,18 @@ async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
     """
     # 1. Fetch web data safely via Trafilatura
     try:
-        downloaded = trafilatura.fetch_url(url)
+        downloaded = await asyncio.to_thread(trafilatura.fetch_url, url)
         if not downloaded:
             return f"Failed to fetch network stream from: {url}"
             
         # Extract metadata and clean text main body (ignoring ads, navbars, and headers)
-        raw_text = trafilatura.extract(downloaded, include_links=False, include_images=False)
+        raw_text = await asyncio.to_thread(trafilatura.extract, downloaded, include_links=False, include_images=False)
         if not raw_text:
             return f"No parseable text corpus found at: {url}"
             
         # Extract title defensively
-        title = trafilatura.extract_metadata(downloaded).title if trafilatura.extract_metadata(downloaded) else url
+        metadata = await asyncio.to_thread(trafilatura.extract_metadata, downloaded)
+        title = metadata.title if metadata else url
     except Exception as e:
         return f"Trafilatura extraction failure for {url}: {str(e)}"
 

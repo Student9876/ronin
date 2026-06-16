@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlmodel import Session
-from typing import Literal, AsyncGenerator
+from typing import Literal, AsyncGenerator, Optional
 
 from src.config.agent_config import settings
 from src.config.database import get_session
@@ -15,6 +15,8 @@ class QueryPayload(BaseModel):
     thread_id: int
     query: str
     mode: Literal["general", "deep", "code"]
+    search_depth: Optional[Literal["quick", "comprehensive", "exhaustive"]] = "comprehensive"
+    strictness: Optional[Literal["lenient", "strict"]] = "strict"
 
 async def stream_and_record(payload: QueryPayload, engine_generator: AsyncGenerator):
     """

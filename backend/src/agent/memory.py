@@ -2,6 +2,8 @@ import logging
 from typing import TypedDict, Annotated, Sequence, Literal
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
+from pydantic import BaseModel, Field
+from src.utils.llm_client import call_local_llm_structured
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +15,10 @@ class MemoryState(TypedDict):
     messages: Annotated[list, "add_messages"]
     summary: str
 
-def compact_history(state: MemoryState) -> dict:
+class ConversationSummary(BaseModel):
+    summary: str = Field(description="A concise, high-density summary of the conversation history so far.")
+
+async def compact_history(state: MemoryState) -> dict:
     """
     Node: Detects when the message backlog exceeds safety boundaries 
     and squashes older blocks into a high-density rolling context summary.
@@ -30,13 +35,24 @@ def compact_history(state: MemoryState) -> dict:
     preserved_messages = messages[-2:]
     messages_to_summarize = messages[:-2]
 
-    # TODO: Invoke your centralized LLM client helper here to generate the summary
-    # placeholder logic representing the compilation of the backlog:
-    simulated_summary = "Prior conversation summarized to maintain context boundaries."
+    # Invoke our centralized LLM client helper to generate the summary
+    system_prompt = (
+        "You are an expert conversation summarizer. Synthesize the provided dialogue history "
+        "into a single high-density summary paragraph. Retain key facts, products mentioned, "
+        "user settings, and past decisions."
+    )
+    user_prompt = "\n".join([f"{m.get('role', 'unknown').capitalize()}: {m.get('content', '')}" for m in messages_to_summarize])
+    
+    try:
+        result = await call_local_llm_structured(system_prompt, user_prompt, ConversationSummary)
+        summary = result.summary
+    except Exception as e:
+        logger.error(f"Failed to generate rolling context summary: {e}")
+        summary = "Prior conversation summarized to maintain context boundaries."
 
     return {
         "messages": preserved_messages,
-        "summary": simulated_summary
+        "summary": summary
     }
 
 def route_compaction(state: MemoryState) -> Literal["compact", "__end__"]:

@@ -31,20 +31,29 @@ class DeepResearchState(TypedDict):
     scraped_text: str  # Temporary buffer for the evaluator
     current_url: str   # Tagged URL for the current scrape
     verified_facts: List[Dict[str, str]]       
+    search_depth: str
+    strictness: str
 
 # --- The Graph Nodes ---
 async def planner_node(state: DeepResearchState):
     history_context = f"\nRecent Conversation Context:\n{state.get('chat_history', 'None')}" if state.get('chat_history') else ""
     
+    depth = state.get("search_depth", "comprehensive")
+    num_queries = 3
+    if depth == "quick":
+        num_queries = 1
+    elif depth == "exhaustive":
+        num_queries = 5
+
     system_prompt = (
-        "You are a lead technical research architect. Break the user's objective into exactly 3 highly specific, distinct search engine queries. "
+        f"You are a lead technical research architect. Break the user's objective into exactly {num_queries} highly specific, distinct search engine queries. "
         "CRITICAL: Generate pure search keywords only. DO NOT generate URLs or links. "
         "Use the Recent Conversation Context to resolve any pronouns (like 'it', 'this one') into specific product names or subjects before writing the search queries."
         f"{history_context}"
     )
     try:
         plan = await call_local_llm_structured(system_prompt, state["query"], ResearchChecklist)
-        queries = plan.sub_queries[:3] if plan.sub_queries else [state["query"]]
+        queries = plan.sub_queries[:num_queries] if plan.sub_queries else [state["query"]]
     except Exception as e:
         print(f"Planner failed: {e}")
         queries = [state["query"]] 
@@ -62,6 +71,13 @@ async def scraper_node(state: DeepResearchState):
 
     extracted_text = ""
     target_url = ""
+
+    depth = state.get("search_depth", "comprehensive")
+    link_limit = 3
+    if depth == "quick":
+        link_limit = 1
+    elif depth == "exhaustive":
+        link_limit = 5
 
     headers = {
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -85,7 +101,7 @@ async def scraper_node(state: DeepResearchState):
                     results = []
                 
                 # Grab the top valid link
-                for res in results[:3]:
+                for res in results[:link_limit]:
                     url = res.get("url")
                     if not url: continue
                     text = await ingest_url(thread_id=state["thread_id"], subtopic=current_task, url=url)
@@ -113,12 +129,25 @@ async def evaluator_node(state: DeepResearchState):
         # Network failed to find readable data. Treat as failed evaluation.
         return handle_failed_evaluation(state)
 
+    strictness = state.get("strictness", "strict")
+    if strictness == "lenient":
+        strictness_instructions = (
+            "Be lenient. If the text contains general tips or helpful explanations "
+            "relevant to the query, mark it as valuable."
+        )
+    else:
+        strictness_instructions = (
+            "Be extremely strict and ruthless. Only mark true if the scraped text provides "
+            "specific, highly-dense factual evidence, precise statistics, code blocks, or exact parameters "
+            "directly answering the target query. Reject high-level fluff or unrelated advice."
+        )
+
     system_prompt = (
-        "You are a ruthless technical data grader. Analyze the scraped text against the target search query.\n\n"
+        "You are a professional technical data grader. Analyze the scraped text against the target search query.\n\n"
         "CRITICAL RULES:\n"
-        "1. The AMD Ryzen 7 9800X3D is a modern Zen 5 processor. Reject any outdated software designed for Zen 3 or older (like zenpower3, zenmonitor).\n"
-        "2. If the text mentions general CPU cooling tips or basic motherboard settings without addressing the active query parameters, mark it false.\n"
-        "3. Only mark true if the text provides specific, technical facts or verified parameters relevant to modern hardware configurations."
+        f"1. {strictness_instructions}\n"
+        "2. Reject generic landing pages, boilerplates, headers, footers, or navigational links.\n"
+        "3. Extract a clean, dense factual finding and place it in the 'key_finding' field."
     )
     user_prompt = f"Target Query: {state['current_task']}\n\nScraped Text:\n{state['scraped_text']}"
     
@@ -205,7 +234,9 @@ async def stream_research(payload: Any, mode_cfg: Any):
         "evaluation_attempts": 0,
         "scraped_text": "",
         "current_url": "",
-        "verified_facts": []
+        "verified_facts": [],
+        "search_depth": payload.search_depth or "comprehensive",
+        "strictness": payload.strictness or "strict"
     }
     
     current_state = initial_state.copy()
@@ -221,15 +252,37 @@ async def stream_research(payload: Any, mode_cfg: Any):
         if event[node_name]: 
             current_state.update(event[node_name])
             
+        # Emit live telemetry: state update
+        yield f"data: {json.dumps({'type': 'state', 'data': current_state})}\n\n"
+
         if node_name == "planner":
             yield format_status("planner", f"Deconstructed query into {len(current_state['pending_tasks'])} execution paths.")
         elif node_name == "scraper":
             yield format_status("scraper", f"Analyzing sources for: {current_state['current_task']}")
+            if current_state.get("current_url"):
+                tool_data = {
+                    'name': 'SearXNG Web Search & Scrape',
+                    'status': 'completed',
+                    'input': {'query': current_state['current_task']},
+                    'output': f"Scraped site: {current_state['current_url']}"
+                }
+                yield f"data: {json.dumps({'type': 'tool', 'data': tool_data})}\n\n"
         elif node_name == "evaluator":
             if current_state["evaluation_attempts"] == 0:
                 yield format_status("evaluator", "Fact validated and secured.")
             else:
                 yield format_status("evaluator", "Data insufficient. Adjusting parameters and digging deeper...")
+                
+            tool_data = {
+                'name': 'Fact Evaluator LLM',
+                'status': 'completed',
+                'input': {
+                    'query': current_state['current_task'],
+                    'attempts': current_state['evaluation_attempts']
+                },
+                'output': f"Verified facts compiled so far: {len(current_state['verified_facts'])}"
+            }
+            yield f"data: {json.dumps({'type': 'tool', 'data': tool_data})}\n\n"
                 
     yield format_status("synthesizer", "Synthesizing final highly-cited report...")
     
