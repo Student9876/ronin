@@ -4,8 +4,9 @@ from openai import AsyncOpenAI
 
 from src.config.agent_config import settings
 from src.utils.network import get_http_client
+import asyncio
 from src.agent.tools.ingestion import ingest_url
-from src.agent.memory import memory_app
+from src.agent.memory import memory_app, bootstrap_memory_state
 
 # Initialize local LLM client globally for this module
 client = AsyncOpenAI(base_url=settings.LOCAL_LLM_URL, api_key="lm-studio")
@@ -14,6 +15,9 @@ async def stream_chat(payload: Any, mode_cfg: Any):
     """The foreground stream handler triggered by the FastAPI router wrapper with forced citation indexing."""
     thread_id = payload.thread_id
     query = payload.query
+    
+    # Bootstrap the LangGraph checkpointer memory from SQL history if empty
+    await bootstrap_memory_state(thread_id)
     
     # 1. Retrieve the active context from LangGraph Checkpointer
     config = {"configurable": {"thread_id": str(thread_id)}}
@@ -29,38 +33,45 @@ async def stream_chat(payload: Any, mode_cfg: Any):
     try:
         yield f"data: {json.dumps({'type': 'status', 'node': 'web_search', 'message': 'Searching the web for real-time data...'})}\n\n"
         
-        headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json"
-        }
+        from src.agent.tools.registry import execute_tool
+        
+        # 1. Execute the web_search tool from registry
+        results, search_telemetry = await execute_tool("web_search", query=query, limit=2)
+        yield f"data: {json.dumps({'type': 'tool', 'data': search_telemetry})}\n\n"
+        
+        async def process_single_url(url_val):
+            text, scrape_telemetry = await execute_tool("ingest_url", thread_id=thread_id, subtopic=query, url=url_val)
+            if not text.startswith("Failed") and not text.startswith("No parseable"):
+                truncated_text = text[:1500]
+                return {
+                    "url": url_val,
+                    "block_template": f"--- START SOURCE [__IDX__] ---\nURL: {url_val}\nCONTENT:\n{truncated_text}\n--- END SOURCE [__IDX__] ---",
+                    "telemetry": scrape_telemetry
+                }
+            return {"telemetry": scrape_telemetry}
 
-        async with get_http_client() as network_client:
-            search_res = await network_client.get(settings.SEARXNG_URL, params={"q": query, "format": "json"}, headers=headers)
-            results = []
-            if search_res.status_code == 200:
-                try:
-                    results = search_res.json().get("results", [])[:2]
-                except Exception as e:
-                    print(f"General mode search JSON parse failed: {e}")
-            
-            idx = 1
-            blocks = []
-            for res in results:
-                url = res.get("url")
-                if not url: continue
-                text = await ingest_url(thread_id=thread_id, subtopic=query, url=url)
-                if not text.startswith("Failed") and not text.startswith("No parseable"):
-                    # Limit chunk length per source to prevent blinding an 8B model
-                    truncated_text = text[:1500] 
-                    blocks.append(f"--- START SOURCE [{idx}] ---\nURL: {url}\nCONTENT:\n{truncated_text}\n--- END SOURCE [{idx}] ---")
-                    source_links.append({"idx": idx, "url": url})
+        scrape_tasks = []
+        for res in results:
+            url = res.get("url")
+            if url:
+                scrape_tasks.append(process_single_url(url))
+        
+        scraped_outcomes = await asyncio.gather(*scrape_tasks)
+        
+        idx = 1
+        blocks = []
+        for outcome in scraped_outcomes:
+            if outcome:
+                # Yield scrape telemetry for each URL
+                yield f"data: {json.dumps({'type': 'tool', 'data': outcome['telemetry']})}\n\n"
+                if "block_template" in outcome:
+                    block = outcome["block_template"].replace("__IDX__", str(idx))
+                    blocks.append(block)
+                    source_links.append({"idx": idx, "url": outcome["url"]})
                     idx += 1
-            
-            if blocks:
-                scraped_context = "\n\n".join(blocks)
-                
-            # Yield tool telemetry event
-            yield f"data: {json.dumps({'type': 'tool', 'data': {'name': 'SearXNG Web Search & Scrape', 'status': 'completed', 'input': {'query': query}, 'output': f'Successfully scraped {len(source_links)} source URLs: ' + ', '.join([l['url'] for l in source_links])}})}\n\n"
+        
+        if blocks:
+            scraped_context = "\n\n".join(blocks)
     except Exception as e:
         print(f"General mode live web lookup fallback: {e}")
 

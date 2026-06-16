@@ -6,9 +6,12 @@ from langgraph.graph import StateGraph, START, END
 
 from src.config.agent_config import settings
 from src.utils.network import get_http_client
+import asyncio
 from src.agent.tools.ingestion import ingest_url
 from src.agent.graphs.general_chat import memory_app
+from src.agent.memory import bootstrap_memory_state
 from src.utils.llm_client import call_local_llm_structured
+from src.agent.tools.registry import execute_tool
 
 # --- Structured Output Schemas ---
 class ResearchChecklist(BaseModel):
@@ -33,6 +36,7 @@ class DeepResearchState(TypedDict):
     verified_facts: List[Dict[str, str]]       
     search_depth: str
     strictness: str
+    tools_executed: List[Dict[str, Any]]
 
 # --- The Graph Nodes ---
 async def planner_node(state: DeepResearchState):
@@ -58,7 +62,7 @@ async def planner_node(state: DeepResearchState):
         print(f"Planner failed: {e}")
         queries = [state["query"]] 
         
-    return {"pending_tasks": queries, "evaluation_attempts": 0, "verified_facts": []}
+    return {"pending_tasks": queries, "evaluation_attempts": 0, "verified_facts": [], "tools_executed": []}
 
 async def scraper_node(state: DeepResearchState):
     tasks = state["pending_tasks"]
@@ -71,6 +75,7 @@ async def scraper_node(state: DeepResearchState):
 
     extracted_text = ""
     target_url = ""
+    new_tools_executed = list(state.get("tools_executed", []))
 
     depth = state.get("search_depth", "comprehensive")
     link_limit = 3
@@ -79,49 +84,33 @@ async def scraper_node(state: DeepResearchState):
     elif depth == "exhaustive":
         link_limit = 5
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
+    # 1. Execute Search Tool
+    results, search_telemetry = await execute_tool("web_search", query=current_task, limit=link_limit)
+    new_tools_executed.append(search_telemetry)
+    
+    # 2. Scrape candidate URLs concurrently
+    async def scrape_and_clean(url_val):
+        text, scrape_telemetry = await execute_tool("ingest_url", thread_id=state["thread_id"], subtopic=current_task, url=url_val)
+        if not text.startswith("Failed") and not text.startswith("No parseable"):
+            cleaned = " ".join(text.split())[:8000]
+            return url_val, cleaned, scrape_telemetry
+        return None, None, scrape_telemetry
 
-    async with get_http_client() as network_client:
-        try:
-            search_res = await network_client.get(
-                settings.SEARXNG_URL,
-                params={"q": current_task, "format": "json"},
-                headers=headers,
-            )
-            
-            # Guard against SearXNG HTML error pages
-            if search_res.status_code == 200:
-                try:
-                    results = search_res.json().get("results", [])
-                except Exception as e:
-                    print(f"Scraper warning: unable to parse SearXNG JSON for query '{current_task}': {e}")
-                    results = []
-                
-                # Grab the top valid link
-                for res in results[:link_limit]:
-                    url = res.get("url")
-                    if not url: continue
-                    text = await ingest_url(thread_id=state["thread_id"], subtopic=current_task, url=url)
-                    if not text.startswith("Failed") and not text.startswith("No parseable"):
-                        # Clear out heavy whitespace blocks to pack more actual content into the window
-                        cleaned_text = " ".join(text.split())
-                        # Expand context window to 8,000 characters to capture the actual forum body
-                        extracted_text = cleaned_text[:8000] 
-                        target_url = url
-                        break
-            else:
-                print(f"Scraper warning: SearXNG returned status {search_res.status_code}")
-        except Exception as e:
-            print(f"Scraper error: {e}")
+    scrape_tasks = [scrape_and_clean(res.get("url")) for res in results if res.get("url")]
+    if scrape_tasks:
+        scraped_outcomes = await asyncio.gather(*scrape_tasks)
+        for url_val, cleaned, scrape_telemetry in scraped_outcomes:
+            new_tools_executed.append(scrape_telemetry)
+            if cleaned and not extracted_text:  # Choose the first successful scrape
+                target_url = url_val
+                extracted_text = cleaned
 
     return {
         "pending_tasks": tasks,
         "current_task": current_task,
         "scraped_text": extracted_text,
-        "current_url": target_url
+        "current_url": target_url,
+        "tools_executed": new_tools_executed
     }
 
 async def evaluator_node(state: DeepResearchState):
@@ -209,6 +198,9 @@ research_graph = workflow.compile()
 
 # --- Unified Streaming Interface (The Orchestrator) ---
 async def stream_research(payload: Any, mode_cfg: Any):
+    # Bootstrap the LangGraph checkpointer memory from SQL history if empty
+    await bootstrap_memory_state(payload.thread_id)
+
     # 1. Retrieve short-term memory history from the checkpointer to fix amnesia context loss
     config = {"configurable": {"thread_id": str(payload.thread_id)}}
     try:
@@ -236,10 +228,12 @@ async def stream_research(payload: Any, mode_cfg: Any):
         "current_url": "",
         "verified_facts": [],
         "search_depth": payload.search_depth or "comprehensive",
-        "strictness": payload.strictness or "strict"
+        "strictness": payload.strictness or "strict",
+        "tools_executed": []
     }
     
     current_state = initial_state.copy()
+    emitted_tools_count = 0
     
     def format_status(node_name: str, message: str):
         return f"data: {json.dumps({'type': 'status', 'node': node_name, 'message': message})}\n\n"
@@ -255,18 +249,17 @@ async def stream_research(payload: Any, mode_cfg: Any):
         # Emit live telemetry: state update
         yield f"data: {json.dumps({'type': 'state', 'data': current_state})}\n\n"
 
+        # Stream any newly added tool execution events to the SSE channel
+        tools_list = current_state.get("tools_executed", [])
+        while emitted_tools_count < len(tools_list):
+            new_tool = tools_list[emitted_tools_count]
+            yield f"data: {json.dumps({'type': 'tool', 'data': new_tool})}\n\n"
+            emitted_tools_count += 1
+
         if node_name == "planner":
             yield format_status("planner", f"Deconstructed query into {len(current_state['pending_tasks'])} execution paths.")
         elif node_name == "scraper":
             yield format_status("scraper", f"Analyzing sources for: {current_state['current_task']}")
-            if current_state.get("current_url"):
-                tool_data = {
-                    'name': 'SearXNG Web Search & Scrape',
-                    'status': 'completed',
-                    'input': {'query': current_state['current_task']},
-                    'output': f"Scraped site: {current_state['current_url']}"
-                }
-                yield f"data: {json.dumps({'type': 'tool', 'data': tool_data})}\n\n"
         elif node_name == "evaluator":
             if current_state["evaluation_attempts"] == 0:
                 yield format_status("evaluator", "Fact validated and secured.")

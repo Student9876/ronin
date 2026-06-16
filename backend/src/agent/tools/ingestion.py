@@ -5,6 +5,7 @@ from sqlmodel import Session
 
 from src.config.database import engine, ResearchArtifact
 from src.agent.tools.vector_store import VectorManager
+from src.agent.tools.registry import tool_registry
 
 # Instantiate our reusable vector store manager for research
 research_vectors = VectorManager("research_nodes")
@@ -24,6 +25,7 @@ def chunk_text(text: str, chunk_size: int = 1500, chunk_overlap: int = 150) -> L
         start += chunk_size - chunk_overlap
     return chunks
 
+@tool_registry.register("ingest_url", "Fetches body text from a URL, saves to SQLite, and vector indexes to Qdrant.")
 async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
     """
     Rips full text from a URL, commits it to SQLite as a master record,
@@ -58,8 +60,9 @@ async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
         session.add(artifact)
         session.commit()
 
-    # 3. Slit text and vectorize chunks into Qdrant for Gap Analysis retrieval
+    # 3. Slice text and vectorize chunks into Qdrant in a single batch
     text_chunks = chunk_text(raw_text)
+    chunks_to_insert = []
     for i, chunk_slice in enumerate(text_chunks):
         metadata = {
             "url": url,
@@ -67,12 +70,13 @@ async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
             "subtopic": subtopic,
             "chunk_index": i
         }
-        # Uses our VectorManager to embed via Ollama and store in Qdrant with thread filtering tags
-        await research_vectors.insert_chunk(
-            thread_id=thread_id,
-            text=chunk_slice,
-            metadata=metadata
-        )
-
+        chunks_to_insert.append({
+            "text": chunk_slice,
+            "metadata": metadata
+        })
+        
+    if chunks_to_insert:
+        await research_vectors.insert_chunks(thread_id, chunks_to_insert)
+ 
     print(f"Ingestion successful: {url} ({len(text_chunks)} chunks synchronized).")
     return raw_text

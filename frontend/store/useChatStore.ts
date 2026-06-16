@@ -45,11 +45,12 @@ interface ChatState {
     setAgentState: (state: any) => void;
     addTool: (tool: any) => void;
     clearTelemetry: () => void;
+    executeStream: (threadId: number, query: string, modeToUse: string) => Promise<void>;
 }
 
 const API_BASE = "http://localhost:8000/api/v1";
 
-export const useChatStore = create<ChatState>((set) => ({
+export const useChatStore = create<ChatState>((set, get) => ({
     threads: [],
     messages: [],
     events: [],
@@ -169,4 +170,88 @@ export const useChatStore = create<ChatState>((set) => ({
     setAgentState: (agentState) => set({ agentState }),
     addTool: (tool) => set((state) => ({ tools: [...state.tools, tool] })),
     clearTelemetry: () => set({ events: [], agentState: null, tools: [] }),
+    executeStream: async (threadId: number, query: string, modeToUse: string) => {
+        const { isStreaming, settings, addMessage, clearTelemetry, updateAgentMessage, addEvent, addTool, fetchThreads, fetchMessages } = get();
+        if (!query.trim() || isStreaming) return;
+
+        const tempAgentId = `temp-${Date.now()}`;
+
+        addMessage({ id: Date.now().toString(), role: "user", content: query });
+        addMessage({ id: tempAgentId, role: "agent", content: "", statuses: [] });
+
+        set({ isStreaming: true });
+        clearTelemetry();
+
+        try {
+            const response = await fetch(`${API_BASE}/agent/stream`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    thread_id: threadId,
+                    query: query,
+                    mode: modeToUse,
+                    search_depth: settings.searchDepth,
+                    strictness: settings.strictness,
+                }),
+            });
+
+            const body = response.body;
+            if (!body) throw new Error("No response body returned from backend");
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n\n");
+                buffer = lines.pop() || "";
+
+                for (const line of lines) {
+                    if (line.startsWith("data: ")) {
+                        const dataStr = line.replace("data: ", "").trim();
+                        if (!dataStr) continue;
+
+                        if (dataStr === "[DONE]") {
+                            console.log("Stream successfully concluded via backend signal.");
+                            set({ isStreaming: false });
+                            continue;
+                        }
+
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.type === "status") {
+                                updateAgentMessage(tempAgentId, "", { node: data.node, message: data.message });
+                                addEvent({
+                                    id: Date.now().toString() + Math.random(),
+                                    node: data.node,
+                                    msg: data.message,
+                                    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                                });
+                            } else if (data.type === "delta") {
+                                updateAgentMessage(tempAgentId, data.content);
+                            } else if (data.type === "state") {
+                                set({ agentState: data.data });
+                            } else if (data.type === "tool") {
+                                addTool(data.data);
+                            } else if (data.type === "error") {
+                                updateAgentMessage(tempAgentId, `\n\n**System Error:** ${data.message}`);
+                            }
+                        } catch {
+                            console.error("Failed to parse JSON chunk. Data:", dataStr);
+                        }
+                    }
+                }
+            }
+            await fetchThreads();
+        } catch (error) {
+            console.error("Stream error:", error);
+        } finally {
+            set({ isStreaming: false });
+            await fetchMessages(threadId);
+        }
+    },
 }));

@@ -16,9 +16,8 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 	const [isInspectorOpen, setIsInspectorOpen] = useState(true);
 
 	const {
-		messages, fetchMessages, addMessage, updateAgentMessage, 
-		isStreaming, setStreaming, fetchThreads, settings, setSettings,
-		events, agentState, tools, addEvent, setAgentState, addTool, clearTelemetry
+		messages, fetchMessages, isStreaming, fetchThreads, settings,
+		events, agentState, tools, executeStream
 	} = useChatStore();
 
 	useEffect(() => {
@@ -36,96 +35,11 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 		if (initialQuery && !hasInitialized.current) {
 			hasInitialized.current = true;
 			setTimeout(() => {
-				executeStream(initialQuery, initialMode || settings.mode);
+				executeStream(threadId, initialQuery, initialMode || settings.mode);
 				router.replace(`/chat/${threadId}`);
 			}, 100);
 		}
 	}, [searchParams, router, threadId, settings.mode]);
-
-	const executeStream = async (userQuery: string, modeToUse: string) => {
-		if (!userQuery.trim() || isStreaming) return;
-
-		const tempAgentId = `temp-${Date.now()}`;
-
-		addMessage({id: Date.now().toString(), role: "user", content: userQuery});
-		addMessage({id: tempAgentId, role: "agent", content: "", statuses: []});
-
-		setStreaming(true);
-		clearTelemetry();
-
-		try {
-			const response = await fetch("http://localhost:8000/api/v1/agent/stream", {
-				method: "POST",
-				headers: {"Content-Type": "application/json"},
-				body: JSON.stringify({
-					thread_id: threadId,
-					query: userQuery,
-					mode: modeToUse,
-					search_depth: settings.searchDepth,
-					strictness: settings.strictness,
-				}),
-			});
-
-			const body = response.body;
-			if (!body) throw new Error("No response body returned from backend");
-
-			const reader = response.body.getReader();
-			const decoder = new TextDecoder();
-			let buffer = "";
-
-			while (true) {
-				const {done, value} = await reader.read();
-				if (done) break;
-
-				buffer += decoder.decode(value, {stream: true});
-				const lines = buffer.split("\n\n");
-				buffer = lines.pop() || "";
-
-				for (const line of lines) {
-					if (line.startsWith("data: ")) {
-						const dataStr = line.replace("data: ", "").trim();
-						if (!dataStr) continue;
-
-						// Intercept termination token to protect parsing loop execution
-						if (dataStr === "[DONE]") {
-							console.log("Stream successfully concluded via backend signal.");
-							setStreaming(false);
-							continue;
-						}
-
-						try {
-							const data = JSON.parse(dataStr);
-							if (data.type === "status") {
-								updateAgentMessage(tempAgentId, "", {node: data.node, message: data.message});
-								addEvent({
-									id: Date.now().toString() + Math.random(),
-									node: data.node,
-									msg: data.message,
-									time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-								});
-							} else if (data.type === "delta") {
-								updateAgentMessage(tempAgentId, data.content);
-							} else if (data.type === "state") {
-								setAgentState(data.data);
-							} else if (data.type === "tool") {
-								addTool(data.data);
-							} else if (data.type === "error") {
-								updateAgentMessage(tempAgentId, `\n\n**System Error:** ${data.message}`);
-							}
-						} catch {
-							console.error("Failed to parse JSON chunk. Data:", dataStr);
-						}
-					}
-				}
-			}
-			fetchThreads();
-		} catch (error) {
-			console.error("Stream error:", error);
-		} finally {
-			setStreaming(false);
-			fetchMessages(threadId);
-		}
-	};
 
 	return (
 		<div className="flex h-screen w-full bg-slate-50 text-slate-900 overflow-hidden m-0 p-0">
@@ -150,7 +64,7 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 				</header>
 
 				<div className="flex-1 min-h-0 w-full relative flex flex-col">
-					<ChatPane messages={messages} isStreaming={isStreaming} onSubmit={(q: string, m: string) => executeStream(q, m)} />
+					<ChatPane messages={messages} isStreaming={isStreaming} onSubmit={(q: string, m: string) => executeStream(threadId, q, m)} />
 				</div>
 			</div>
 

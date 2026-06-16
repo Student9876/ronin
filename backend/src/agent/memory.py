@@ -12,8 +12,9 @@ class MemoryState(TypedDict):
     Isolated state schema for conversation history management.
     Uses standard message sequence accumulation or primitive dict lists.
     """
-    messages: Annotated[list, "add_messages"]
+    messages: list
     summary: str
+
 
 class ConversationSummary(BaseModel):
     summary: str = Field(description="A concise, high-density summary of the conversation history so far.")
@@ -87,3 +88,34 @@ workflow.add_edge("compact", END)
 
 # Compile the final standalone checkpointer application
 memory_app = workflow.compile(checkpointer=checkpointer)
+
+async def bootstrap_memory_state(thread_id: int):
+    """
+    Ensures the LangGraph checkpointer is bootstrapped with historical messages 
+    from the SQLite database if no state is currently present.
+    """
+    config = {"configurable": {"thread_id": str(thread_id)}}
+    state_snapshot = memory_app.get_state(config)
+    
+    # If the checkpointer is completely empty or missing messages, bootstrap from database
+    if not state_snapshot or not state_snapshot.values or not state_snapshot.values.get("messages"):
+        from src.config.database import engine, Message
+        from sqlmodel import Session, select
+        
+        with Session(engine) as session:
+            statement = select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at.asc())
+            db_messages = session.exec(statement).all()
+            
+        if db_messages:
+            # Reconstruct the past messages list
+            past_messages = []
+            for msg in db_messages:
+                # Map to standard role/content dicts that the graphs expect
+                past_messages.append({"role": msg.role, "content": msg.content})
+                
+            # If the database has messages, populate them. 
+            # Note: the compaction router will automatically compact them if they exceed 6 messages on initialization
+            await memory_app.ainvoke(
+                {"summary": "", "messages": past_messages},
+                config=config
+            )
