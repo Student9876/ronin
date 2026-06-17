@@ -99,12 +99,13 @@ async def bootstrap_memory_state(thread_id: int):
     
     # If the checkpointer is completely empty or missing messages, bootstrap from database
     if not state_snapshot or not state_snapshot.values or not state_snapshot.values.get("messages"):
-        from src.config.database import engine, Message
-        from sqlmodel import Session, select
+        from src.config.database import async_session_maker, Message
+        from sqlmodel import select
         
-        with Session(engine) as session:
+        async with async_session_maker() as session:
             statement = select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at.asc())
-            db_messages = session.exec(statement).all()
+            result = await session.execute(statement)
+            db_messages = result.scalars().all()
             
         if db_messages:
             # Reconstruct the past messages list

@@ -13,3 +13,4 @@ python-dateutil>=2.9.0
 sqlmodel==0.0.16
 qdrant-client
 trafilatura
+aiosqlite

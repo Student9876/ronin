@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlmodel import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 from pydantic import BaseModel
 
@@ -16,58 +17,61 @@ class ThreadUpdate(BaseModel):
     title: str
 
 @router.post("/", response_model=Thread)
-def create_thread(session: Session = Depends(get_session)):
+async def create_thread(session: AsyncSession = Depends(get_session)):
     """Creates a new empty chat thread."""
     thread = Thread(title="New Research Session")
     session.add(thread)
-    session.commit()
-    session.refresh(thread)
+    await session.commit()
+    await session.refresh(thread)
     return thread
 
 @router.get("/", response_model=List[Thread])
-def get_threads(session: Session = Depends(get_session)):
+async def get_threads(session: AsyncSession = Depends(get_session)):
     """Fetches all threads for the sidebar, newest first."""
     statement = select(Thread).order_by(Thread.created_at.desc())
-    return session.exec(statement).all()
+    result = await session.execute(statement)
+    return result.scalars().all()
 
 @router.get("/{thread_id}/messages", response_model=List[Message])
-def get_thread_messages(thread_id: int, session: Session = Depends(get_session)):
+async def get_thread_messages(thread_id: int, session: AsyncSession = Depends(get_session)):
     """Loads the chat history when a user clicks a thread."""
-    thread = session.get(Thread, thread_id)
+    thread = await session.get(Thread, thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     
     statement = select(Message).where(Message.thread_id == thread_id).order_by(Message.created_at.asc())
-    return session.exec(statement).all()
+    result = await session.execute(statement)
+    return result.scalars().all()
 
 @router.patch("/{thread_id}", response_model=Thread)
-def rename_thread(thread_id: int, update_data: ThreadUpdate, session: Session = Depends(get_session)):
+async def rename_thread(thread_id: int, update_data: ThreadUpdate, session: AsyncSession = Depends(get_session)):
     """Renames a specific thread."""
-    thread = session.get(Thread, thread_id)
+    thread = await session.get(Thread, thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     
     thread.title = update_data.title
     session.add(thread)
-    session.commit()
-    session.refresh(thread)
+    await session.commit()
+    await session.refresh(thread)
     return thread
 
 @router.delete("/{thread_id}")
-def delete_thread(thread_id: int, session: Session = Depends(get_session)):
+async def delete_thread(thread_id: int, session: AsyncSession = Depends(get_session)):
     """Deletes a thread and all associated messages."""
-    thread = session.get(Thread, thread_id)
+    thread = await session.get(Thread, thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     
     # Safely delete all child messages first to avoid SQLite foreign key constraints
     statement = select(Message).where(Message.thread_id == thread_id)
-    messages = session.exec(statement).all()
+    result = await session.execute(statement)
+    messages = result.scalars().all()
     for msg in messages:
-        session.delete(msg)
+        await session.delete(msg)
         
-    session.delete(thread)
-    session.commit()
+    await session.delete(thread)
+    await session.commit()
     
     # Purge vectors from Qdrant to prevent memory leak
     try:

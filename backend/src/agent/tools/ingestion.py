@@ -1,9 +1,7 @@
 import asyncio
 import trafilatura
 from typing import List, Dict, Any
-from sqlmodel import Session
-
-from src.config.database import engine, ResearchArtifact
+from src.config.database import async_session_maker, ResearchArtifact
 from src.agent.tools.vector_store import VectorManager
 from src.agent.tools.registry import tool_registry
 
@@ -49,7 +47,7 @@ async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
         return f"Trafilatura extraction failure for {url}: {str(e)}"
 
     # 2. Commit the master copy to SQLite for persistent reference
-    with Session(engine) as session:
+    async with async_session_maker() as session:
         artifact = ResearchArtifact(
             thread_id=thread_id,
             subtopic=subtopic,
@@ -58,7 +56,7 @@ async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
             content=raw_text
         )
         session.add(artifact)
-        session.commit()
+        await session.commit()
 
     # 3. Slice text and vectorize chunks into Qdrant in a single batch
     text_chunks = chunk_text(raw_text)
@@ -76,7 +74,8 @@ async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
         })
         
     if chunks_to_insert:
-        await research_vectors.insert_chunks(thread_id, chunks_to_insert)
+        # Run vector indexing in the background so it doesn't block the stream response
+        asyncio.create_task(research_vectors.insert_chunks(thread_id, chunks_to_insert))
  
     print(f"Ingestion successful: {url} ({len(text_chunks)} chunks synchronized).")
     return raw_text

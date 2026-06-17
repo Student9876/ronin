@@ -2,11 +2,9 @@ import json
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlmodel import Session
 from typing import Literal, AsyncGenerator, Optional
 
 from src.config.agent_config import settings
-from src.config.database import get_session
 from src.utils.database_ops import save_message
 
 router = APIRouter(prefix="/agent", tags=["Agent Operations"])
@@ -45,7 +43,7 @@ async def stream_and_record(payload: QueryPayload, engine_generator: AsyncGenera
 
     # 2. Graph execution complete. Safely persist the agent's memory to the database.
     if accumulated_content.strip() or tracked_statuses:
-        save_message(
+        await save_message(
             thread_id=payload.thread_id,
             role="agent",
             content=accumulated_content.strip(),
@@ -64,7 +62,20 @@ async def handle_agent_stream(payload: QueryPayload): # Removed session dependen
     mode_cfg = settings.MODES[payload.mode]
 
     # Step 1: Pre-Execution Commit - Save User Prompt Globally
-    save_message(thread_id=payload.thread_id, role="user", content=payload.query)
+    await save_message(thread_id=payload.thread_id, role="user", content=payload.query)
+
+    # Auto-rename the thread title if it's the first message and still has the default title
+    from src.config.database import async_session_maker, Thread
+    try:
+        async with async_session_maker() as session:
+            thread = await session.get(Thread, payload.thread_id)
+            if thread and thread.title == "New Research Session":
+                short_title = payload.query[:40] + ("..." if len(payload.query) > 40 else "")
+                thread.title = short_title
+                session.add(thread)
+                await session.commit()
+    except Exception as e:
+        print(f"Auto-rename failed: {e}")
 
     # Step 2: Mode Dispatcher - Select Target Engine
     if payload.mode == "general":

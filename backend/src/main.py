@@ -9,7 +9,7 @@ from src.api.threads import router as threads_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # This fires immediately on container bootup and recreates missing tables
-    create_db_and_tables()
+    await create_db_and_tables()
     yield
 
 app = FastAPI(

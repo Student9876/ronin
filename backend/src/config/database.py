@@ -1,6 +1,8 @@
 from datetime import datetime
-from typing import List, Optional
-from sqlmodel import SQLModel, Field, Relationship, create_engine, Session
+from typing import List, Optional, AsyncGenerator
+from sqlmodel import SQLModel, Field, Relationship
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
 
 # agent configuration matrix
 from src.config.agent_config import settings
@@ -41,12 +43,20 @@ class ResearchArtifact(SQLModel, table=True):
     
     thread: Thread = Relationship(back_populates="artifacts")
 
+# Convert standard sqlite URL to aiosqlite (e.g. sqlite+aiosqlite:///ronin_database.db)
+async_db_url = settings.DATABASE_URL.replace("sqlite:///", "sqlite+aiosqlite:///")
+
 # Engine initialization
-engine = create_engine(settings.DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_async_engine(async_db_url, connect_args={"check_same_thread": False})
 
-def create_db_and_tables():
-    SQLModel.metadata.create_all(engine)
+async_session_maker = sessionmaker(
+    engine, class_=AsyncSession, expire_on_commit=False
+)
 
-def get_session():
-    with Session(engine) as session:
+async def create_db_and_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all)
+
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session_maker() as session:
         yield session

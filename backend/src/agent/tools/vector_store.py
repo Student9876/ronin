@@ -57,31 +57,35 @@ class VectorManager:
         if not chunks:
             return
             
-        # 1. Generate embeddings concurrently
-        embedding_tasks = [self.get_embedding(chunk["text"]) for chunk in chunks]
-        vectors = await asyncio.gather(*embedding_tasks)
-        
-        # 2. Reconstruct PointStructs
-        points = []
-        for chunk, vector in zip(chunks, vectors):
-            payload = {
-                "thread_id": thread_id,
-                "content": chunk["text"],
-                **chunk["metadata"]
-            }
-            points.append(
-                PointStruct(
-                    id=str(uuid.uuid4()),
-                    vector=vector,
-                    payload=payload
-                )
-            )
+        try:
+            # 1. Generate embeddings concurrently
+            embedding_tasks = [self.get_embedding(chunk["text"]) for chunk in chunks]
+            vectors = await asyncio.gather(*embedding_tasks)
             
-        # 3. Upsert as a single batch operation
-        self.client.upsert(
-            collection_name=self.collection_name,
-            points=points
-        )
+            # 2. Reconstruct PointStructs
+            points = []
+            for chunk, vector in zip(chunks, vectors):
+                payload = {
+                    "thread_id": thread_id,
+                    "content": chunk["text"],
+                    **chunk["metadata"]
+                }
+                points.append(
+                    PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector=vector,
+                        payload=payload
+                    )
+                )
+                
+            # 3. Upsert as a single batch operation
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=points
+            )
+            print(f"Background vector insertion successful for thread {thread_id}.")
+        except Exception as e:
+            print(f"Background vector insertion failed for thread {thread_id}: {e}")
 
     async def search_context(self, thread_id: int, query: str, limit: int = 3) -> list[dict]:
         """Retrieves top N relevant chunks strictly isolated to the current thread."""
