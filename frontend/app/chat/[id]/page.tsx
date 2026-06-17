@@ -17,7 +17,7 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 
 	const {
 		messages, fetchMessages, isStreaming, fetchThreads, settings,
-		events, agentState, tools, executeStream
+		events, agentState, tools, executeStream, streamingThreadId
 	} = useChatStore();
 
 	useEffect(() => {
@@ -64,7 +64,11 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 				</header>
 
 				<div className="flex-1 min-h-0 w-full relative flex flex-col">
-					<ChatPane messages={messages} isStreaming={isStreaming} onSubmit={(q: string, m: string) => executeStream(threadId, q, m)} />
+					<ChatPane 
+						messages={messages} 
+						isStreaming={isStreaming && streamingThreadId === threadId} 
+						onSubmit={(q: string, m: string) => executeStream(threadId, q, m)} 
+					/>
 				</div>
 			</div>
 

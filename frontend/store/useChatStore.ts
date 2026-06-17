@@ -26,16 +26,19 @@ export interface AgentSettings {
 interface ChatState {
     threads: Thread[];
     messages: Message[];
+    threadMessages: { [threadId: number]: Message[] };
     events: AgentEvent[];
     agentState: any;
     tools: any[];
     isStreaming: boolean;
+    streamingThreadId: number | null;
+    activeThreadId: number | null;
     settings: AgentSettings;
     fetchThreads: () => Promise<void>;
     createThread: () => Promise<number>;
     fetchMessages: (threadId: number) => Promise<void>;
-    addMessage: (msg: Message) => void;
-    updateAgentMessage: (id: string, chunk: string, status?: Status) => void;
+    addMessage: (threadId: number, msg: Message) => void;
+    updateAgentMessage: (threadId: number, id: string, chunk: string, status?: Status) => void;
     setStreaming: (status: boolean) => void;
     setSettings: (newSettings: Partial<AgentSettings>) => void;
     clearMessages: () => void;
@@ -53,10 +56,13 @@ const API_BASE = "http://localhost:8000/api/v1";
 export const useChatStore = create<ChatState>((set, get) => ({
     threads: [],
     messages: [],
+    threadMessages: {},
     events: [],
     agentState: null,
     tools: [],
     isStreaming: false,
+    streamingThreadId: null,
+    activeThreadId: null,
     settings: {
         mode: "general", // Default to the faster, single-turn graph
         searchDepth: "comprehensive",
@@ -90,14 +96,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
 
     fetchMessages: async (threadId: number) => {
-        set({ messages: [] });
+        // Track the thread currently active in the workspace UI
+        set({ activeThreadId: threadId });
+
+        // Instantly swap the messages array to the cached version for this thread if it exists.
+        // This guarantees an instantaneous UI transition between threads.
+        const cached = get().threadMessages[threadId];
+        if (cached) {
+            set({ messages: cached });
+        } else {
+            set({ messages: [] });
+        }
+
+        // If we are currently streaming on this thread, do not overwrite the live stream state
+        if (get().streamingThreadId === threadId) return;
+
         try {
             const res = await fetch(`${API_BASE}/threads/${threadId}/messages`);
             const data = await res.json();
 
+            // Discard the response if the user navigated away to another thread
+            if (get().activeThreadId !== threadId) return;
+
             if (!Array.isArray(data)) {
                 console.error("Backend did not return an array of messages:", data);
-                set({ messages: [] });
                 return;
             }
 
@@ -105,46 +127,68 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ...msg,
                 statuses: msg.statuses ? JSON.parse(msg.statuses) : []
             }));
-            set({ messages: parsedMessages });
+
+            // Avoid race conditions if the user navigated away or started streaming in the meantime
+            if (get().activeThreadId !== threadId) return;
+            if (get().streamingThreadId === threadId) return;
+
+            set((state) => ({
+                threadMessages: { ...state.threadMessages, [threadId]: parsedMessages },
+                messages: state.activeThreadId === threadId ? parsedMessages : state.messages
+            }));
         } catch (error) {
             console.error("Network error fetching messages:", error);
-            set({ messages: [] });
         }
     },
 
-    addMessage: (msg: Message) =>
+    addMessage: (threadId: number, msg: Message) =>
         set((state) => {
-            if (state.messages.find(m => m.id === msg.id)) {
+            const currentThreadMsgs = state.threadMessages[threadId] || [];
+            if (currentThreadMsgs.find(m => m.id === msg.id)) {
                 return state;
             }
-            return { messages: [...state.messages, msg] };
+            const updated = [...currentThreadMsgs, msg];
+            return {
+                threadMessages: { ...state.threadMessages, [threadId]: updated },
+                messages: state.activeThreadId === threadId ? updated : state.messages
+            };
         }),
 
-    updateAgentMessage: (id: string, chunk: string, newStatus?: Status) =>
-        set((state) => ({
-            messages: state.messages.map((msg) => {
+    updateAgentMessage: (threadId: number, id: string, chunk: string, newStatus?: Status) =>
+        set((state) => {
+            const currentThreadMsgs = state.threadMessages[threadId] || [];
+            const updated = currentThreadMsgs.map((msg) => {
                 if (msg.id !== id) return msg;
                 return {
                     ...msg,
                     content: msg.content + chunk,
                     statuses: newStatus ? [...(msg.statuses || []), newStatus] : msg.statuses,
                 };
-            }),
-        })),
+            });
+            return {
+                threadMessages: { ...state.threadMessages, [threadId]: updated },
+                messages: state.activeThreadId === threadId ? updated : state.messages
+            };
+        }),
 
     setStreaming: (status: boolean) => set({ isStreaming: status }),
 
     setSettings: (newSettings) =>
         set((state) => ({ settings: { ...state.settings, ...newSettings } })),
-    clearMessages: () => set({ messages: [] }),
+    clearMessages: () => set({ messages: [], threadMessages: {} }),
 
     deleteThread: async (threadId: number) => {
         try {
             await fetch(`${API_BASE}/threads/${threadId}`, { method: "DELETE" });
-            set((state) => ({
-                threads: state.threads.filter((t) => t.id !== threadId),
-                messages: state.messages.length > 0 && state.messages[0].id.toString().includes(threadId.toString()) ? [] : state.messages
-            }));
+            set((state) => {
+                const updatedThreadMessages = { ...state.threadMessages };
+                delete updatedThreadMessages[threadId];
+                return {
+                    threads: state.threads.filter((t) => t.id !== threadId),
+                    threadMessages: updatedThreadMessages,
+                    messages: state.activeThreadId === threadId ? [] : state.messages
+                };
+            });
         } catch (error) {
             console.error("Failed to delete thread:", error);
         }
@@ -176,10 +220,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
         const tempAgentId = `temp-${Date.now()}`;
 
-        addMessage({ id: Date.now().toString(), role: "user", content: query });
-        addMessage({ id: tempAgentId, role: "agent", content: "", statuses: [] });
+        addMessage(threadId, { id: Date.now().toString(), role: "user", content: query });
+        addMessage(threadId, { id: tempAgentId, role: "agent", content: "", statuses: [] });
 
-        set({ isStreaming: true });
+        set({ isStreaming: true, streamingThreadId: threadId });
         clearTelemetry();
 
         try {
@@ -194,6 +238,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     strictness: settings.strictness,
                 }),
             });
+
+            // Fetch threads to immediately reflect the auto-renamed title in the sidebar
+            fetchThreads();
 
             const body = response.body;
             if (!body) throw new Error("No response body returned from backend");
@@ -224,7 +271,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                         try {
                             const data = JSON.parse(dataStr);
                             if (data.type === "status") {
-                                updateAgentMessage(tempAgentId, "", { node: data.node, message: data.message });
+                                updateAgentMessage(threadId, tempAgentId, "", { node: data.node, message: data.message });
                                 addEvent({
                                     id: Date.now().toString() + Math.random(),
                                     node: data.node,
@@ -232,13 +279,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
                                     time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
                                 });
                             } else if (data.type === "delta") {
-                                updateAgentMessage(tempAgentId, data.content);
+                                updateAgentMessage(threadId, tempAgentId, data.content);
                             } else if (data.type === "state") {
                                 set({ agentState: data.data });
                             } else if (data.type === "tool") {
                                 addTool(data.data);
                             } else if (data.type === "error") {
-                                updateAgentMessage(tempAgentId, `\n\n**System Error:** ${data.message}`);
+                                updateAgentMessage(threadId, tempAgentId, `\n\n**System Error:** ${data.message}`);
                             }
                         } catch {
                             console.error("Failed to parse JSON chunk. Data:", dataStr);
@@ -250,7 +297,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         } catch (error) {
             console.error("Stream error:", error);
         } finally {
-            set({ isStreaming: false });
+            set({ isStreaming: false, streamingThreadId: null });
             await fetchMessages(threadId);
         }
     },
