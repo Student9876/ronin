@@ -1,7 +1,6 @@
 import asyncio
 import trafilatura
 from typing import List, Dict, Any
-from src.config.database import async_session_maker, ResearchArtifact
 from src.agent.tools.vector_store import VectorManager
 from src.agent.tools.registry import tool_registry
 
@@ -23,11 +22,11 @@ def chunk_text(text: str, chunk_size: int = 1500, chunk_overlap: int = 150) -> L
         start += chunk_size - chunk_overlap
     return chunks
 
-@tool_registry.register("ingest_url", "Fetches body text from a URL, saves to SQLite, and vector indexes to Qdrant.")
+@tool_registry.register("ingest_url", "Fetches body text from a URL and vector indexes to Qdrant.")
 async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
     """
-    Rips full text from a URL, commits it to SQLite as a master record,
-    chunks it, embeds it via Ollama, and index drops it into Qdrant.
+    Rips full text from a URL, chunks it, embeds it via Ollama,
+    and index drops it into Qdrant.
     """
     # 1. Fetch web data safely via Trafilatura
     try:
@@ -45,18 +44,6 @@ async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
         title = metadata.title if metadata else url
     except Exception as e:
         return f"Trafilatura extraction failure for {url}: {str(e)}"
-
-    # 2. Commit the master copy to SQLite for persistent reference
-    async with async_session_maker() as session:
-        artifact = ResearchArtifact(
-            thread_id=thread_id,
-            subtopic=subtopic,
-            url=url,
-            title=title,
-            content=raw_text
-        )
-        session.add(artifact)
-        await session.commit()
 
     # 3. Slice text and vectorize chunks into Qdrant in a single batch
     text_chunks = chunk_text(raw_text)

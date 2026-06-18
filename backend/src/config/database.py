@@ -17,11 +17,6 @@ class Thread(SQLModel, table=True):
         back_populates="thread", 
         sa_relationship_kwargs={"cascade": "all, delete-orphan"}
     )
-    artifacts: List["ResearchArtifact"] = Relationship(
-        back_populates="thread", 
-        sa_relationship_kwargs={"cascade": "all, delete-orphan"}
-    )
-
 class Message(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     thread_id: int = Field(foreign_key="thread.id")
@@ -31,17 +26,6 @@ class Message(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
     thread: Thread = Relationship(back_populates="messages")
-
-class ResearchArtifact(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    thread_id: int = Field(foreign_key="thread.id")
-    subtopic: str
-    url: str
-    title: str
-    content: str # Cleaned body content extracted by Trafilatura
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    
-    thread: Thread = Relationship(back_populates="artifacts")
 
 # Convert standard sqlite URL to aiosqlite (e.g. sqlite+aiosqlite:///ronin_database.db)
 async_db_url = settings.DATABASE_URL.replace("sqlite:///", "sqlite+aiosqlite:///")
