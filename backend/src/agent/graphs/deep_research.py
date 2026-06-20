@@ -10,7 +10,7 @@ import asyncio
 from src.agent.tools.ingestion import ingest_url
 from src.agent.graphs.general_chat import memory_app
 from src.agent.memory import bootstrap_memory_state
-from src.utils.llm_client import call_local_llm_structured
+from src.utils.llm_client import call_local_llm_structured, llm_client
 from src.agent.tools.registry import execute_tool
 
 # --- Structured Output Schemas ---
@@ -304,32 +304,25 @@ async def stream_research(payload: Any, mode_cfg: Any):
     )
     
     final_content = ""
-    async with httpx.AsyncClient() as client:
-        async with client.stream(
-            "POST",
-            settings.LOCAL_LLM_URL + "/chat/completions",
-            json={
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": payload.query}
-                ], 
-                "temperature": 0.2, 
-                "stream": True
-            },
+    try:
+        response_stream = await llm_client.chat.completions.create(
+            model=mode_cfg.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": payload.query}
+            ],
+            temperature=0.2,
+            stream=True,
             timeout=120.0
-        ) as response:
-            async for line in response.aiter_lines():
-                if line.startswith("data: "):
-                    data_str = line.replace("data: ", "")
-                    if data_str.strip() == "[DONE]": break
-                    try:
-                        chunk = json.loads(data_str)
-                        delta = chunk["choices"][0]["delta"].get("content", "")
-                        if delta:
-                            final_content += delta
-                            yield f"data: {json.dumps({'type': 'delta', 'content': delta})}\n\n"
-                    except:
-                        pass
+        )
+        async for chunk in response_stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                final_content += delta
+                yield f"data: {json.dumps({'type': 'delta', 'content': delta})}\n\n"
+    except Exception as e:
+        print(f"Deep Research stream synthesis error: {e}")
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     # Commit the interaction back to memory_app so follow-up queries maintain deep research history
     new_past_messages = past_messages + [

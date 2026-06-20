@@ -29,7 +29,6 @@ services:
     depends_on:
       - searxng
       - qdrant
-      - ollama
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always
@@ -43,16 +42,6 @@ services:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama_embedder
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_storage:/root/.ollama
-    restart: unless-stopped
-
 volumes:
   qdrant_storage:
-  ollama_storage:
   searxng_cache:

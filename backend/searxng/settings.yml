@@ -25,7 +25,7 @@ engines:
     engine: bing
     shortcut: bi
     categories: general
-    timeout: 3.0
+    timeout: 1.5
     weight: 1.0
     disabled: false
     
@@ -33,7 +33,7 @@ engines:
     engine: brave
     shortcut: br
     categories: general
-    timeout: 3.0
+    timeout: 1.5
     weight: 1.5
     disabled: false
 
@@ -41,7 +41,7 @@ engines:
     engine: qwant
     shortcut: qw
     categories: general
-    timeout: 2.0
+    timeout: 1.5
     weight: 1.0
     disabled: false
 
@@ -49,7 +49,7 @@ engines:
     engine: duckduckgo
     shortcut: dd
     categories: general
-    timeout: 4.0
+    timeout: 2.0
     weight: 1.0
     disabled: false
 
@@ -57,7 +57,7 @@ engines:
     engine: google
     shortcut: go
     categories: general
-    timeout: 5.0
+    timeout: 2.0
     weight: 1.0
     disabled: false 
 

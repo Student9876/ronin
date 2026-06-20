@@ -30,7 +30,7 @@ async def ingest_url(thread_id: int, subtopic: str, url: str) -> str:
     """
     # 1. Fetch web data safely via Trafilatura
     try:
-        downloaded = await asyncio.to_thread(trafilatura.fetch_url, url)
+        downloaded = await asyncio.to_thread(trafilatura.fetch_url, url, timeout=10)
         if not downloaded:
             return f"Failed to fetch network stream from: {url}"
             

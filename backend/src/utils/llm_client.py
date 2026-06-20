@@ -1,9 +1,15 @@
 import json
-import httpx
 import re
 from typing import Any, List
+from openai import AsyncOpenAI
 
 from src.config.agent_config import settings
+
+# Consolidated global client instance using configuration settings
+llm_client = AsyncOpenAI(
+    base_url=settings.LLM_BASE_URL,
+    api_key=settings.LLM_API_KEY
+)
 
 def _salvage_queries(raw_text: str, default_query: str) -> List[str]:
     """Attempts to regex-rip the queries out of broken JSON. If failed, builds a dense keyword query."""
@@ -37,6 +43,9 @@ def _generate_fallback(response_model: Any, user_prompt: str, raw_llm_text: str 
         
     elif response_model.__name__ == "FactEvaluation":
         return response_model(is_valuable=False, key_finding="")
+        
+    elif response_model.__name__ == "ConversationSummary":
+        return response_model(summary="Prior conversation summarized to maintain context boundaries.")
     
     return response_model.construct() if hasattr(response_model, "construct") else response_model()
 
@@ -99,24 +108,21 @@ async def call_local_llm_structured(system_prompt: str, user_prompt: str, respon
     )
     
     raw_json = ""
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(
-                settings.LOCAL_LLM_URL + "/chat/completions",
-                json={
-                    "messages": [
-                        {"role": "system", "content": enforced_system},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    "temperature": 0.1
-                },
-                timeout=60.0
-            )
-            response.raise_for_status()
-            raw_json = response.json()["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            print(f"Network error calling LLM: {e}")
-            return _generate_fallback(response_model, user_prompt, raw_json)
+    try:
+        response = await llm_client.chat.completions.create(
+            model=settings.GENERAL_MODEL,
+            messages=[
+                {"role": "system", "content": enforced_system},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,
+            timeout=60.0
+        )
+        content = response.choices[0].message.content
+        raw_json = content.strip() if content else ""
+    except Exception as e:
+        print(f"Error calling LLM: {e}")
+        return _generate_fallback(response_model, user_prompt, raw_json)
         
         # Strip markdown wrapping
         if "```json" in raw_json:

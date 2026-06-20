@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
-from typing import Dict, Literal
+from typing import Dict, Literal, Optional
 
 class ModeSettings(BaseModel):
     mode_id: Literal["general", "deep", "code"]
@@ -12,10 +12,17 @@ class ModeSettings(BaseModel):
 class AgentConfigMatrix(BaseSettings):
     # Core Infrastructure Endpoints
     # host.docker.internal allows the Docker container to exit safely to the host machine's ports
-    LOCAL_LLM_URL: str = "http://host.docker.internal:1234/v1"
+    LLM_BASE_URL: str = "http://host.docker.internal:1234/v1"
+    LLM_API_KEY: str = "lm-studio"
+    LOCAL_LLM_URL: Optional[str] = None  # Legacy support fallback
+
+    GENERAL_MODEL: str = "meta-llama-3-8b-instruct"
+    DEEP_MODEL: str = "meta-llama-3-8b-instruct"
+    CODE_MODEL: str = "meta-llama-3-8b-instruct"
+
     SEARXNG_URL: str = "http://searxng:8080/search"
     QDRANT_URL: str = "http://qdrant:6333"
-    OLLAMA_EMBED_URL: str = "http://ollama:11434/api/embeddings"
+    EMBEDDING_MODEL: str = "gemini-embedding-2"
     DATABASE_URL: str = "sqlite:///ronin_database.db"
 
     # Strict System Constraints Matrix
@@ -42,6 +49,18 @@ class AgentConfigMatrix(BaseSettings):
             system_prompt="You are a senior systems developer. Generate strict semantic implementations using provided AST syntax code blocks."
         )
     }
+
+    def model_post_init(self, __context):
+        # Sync legacy env var name if set
+        if self.LOCAL_LLM_URL:
+            self.LLM_BASE_URL = self.LOCAL_LLM_URL
+        else:
+            self.LOCAL_LLM_URL = self.LLM_BASE_URL
+
+        # Dynamically override the configuration matrix with env overrides
+        self.MODES["general"].model_name = self.GENERAL_MODEL
+        self.MODES["deep"].model_name = self.DEEP_MODEL
+        self.MODES["code"].model_name = self.CODE_MODEL
 
     class Config:
         env_file = ".env"

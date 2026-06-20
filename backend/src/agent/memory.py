@@ -46,7 +46,7 @@ async def compact_history(state: MemoryState) -> dict:
     
     try:
         result = await call_local_llm_structured(system_prompt, user_prompt, ConversationSummary)
-        summary = result.summary
+        summary = result.summary if (result and getattr(result, "summary", None)) else "Prior conversation summarized to maintain context boundaries."
     except Exception as e:
         logger.error(f"Failed to generate rolling context summary: {e}")
         summary = "Prior conversation summarized to maintain context boundaries."

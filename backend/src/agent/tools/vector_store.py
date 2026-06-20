@@ -24,15 +24,14 @@ class VectorManager:
             )
 
     async def get_embedding(self, text: str) -> list[float]:
-        """Hits the dedicated Ollama container for vectorization."""
-        async with httpx.AsyncClient() as http_client:
-            response = await http_client.post(
-                settings.OLLAMA_EMBED_URL,
-                json={"model": "nomic-embed-text", "prompt": text},
-                timeout=30.0
-            )
-            response.raise_for_status()
-            return response.json()["embedding"]
+        """Embeds text using the centralized LLM client embedding service."""
+        from src.utils.llm_client import llm_client
+        response = await llm_client.embeddings.create(
+            model=settings.EMBEDDING_MODEL,
+            input=[text],
+            dimensions=768
+        )
+        return response.data[0].embedding
 
     async def insert_chunk(self, thread_id: int, text: str, metadata: dict):
         """Embeds and inserts a single chunk with thread isolation."""

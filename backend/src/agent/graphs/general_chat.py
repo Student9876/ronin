@@ -1,18 +1,15 @@
 import json
 from typing import Dict, List, Any
-from openai import AsyncOpenAI
 
 from src.config.agent_config import settings
 from src.utils.network import get_http_client
 import asyncio
 from src.agent.tools.ingestion import ingest_url
 from src.agent.memory import memory_app, bootstrap_memory_state
-
-# Initialize local LLM client globally for this module
-client = AsyncOpenAI(base_url=settings.LOCAL_LLM_URL, api_key="lm-studio")
+from src.utils.llm_client import llm_client
 
 async def stream_chat(payload: Any, mode_cfg: Any):
-    """The foreground stream handler triggered by the FastAPI router wrapper with forced citation indexing."""
+    """The foreground stream handler triggered by the FastAPI router wrapper with a dynamic ReAct agent loop."""
     thread_id = payload.thread_id
     query = payload.query
     
@@ -26,108 +23,194 @@ async def stream_chat(payload: Any, mode_cfg: Any):
     
     summary = current_state.get("summary", "")
     past_messages = current_state.get("messages", [])
-    
-    # 2. Executing fast one-shot web scrape layer with link mapping
-    scraped_context = ""
-    source_links = []
-    try:
-        yield f"data: {json.dumps({'type': 'status', 'node': 'web_search', 'message': 'Searching the web for real-time data...'})}\n\n"
-        
-        from src.agent.tools.registry import execute_tool
-        
-        # 1. Execute the web_search tool from registry
-        results, search_telemetry = await execute_tool("web_search", query=query, limit=2)
-        yield f"data: {json.dumps({'type': 'tool', 'data': search_telemetry})}\n\n"
-        
-        async def process_single_url(url_val):
-            text, scrape_telemetry = await execute_tool("ingest_url", thread_id=thread_id, subtopic=query, url=url_val)
-            if not text.startswith("Failed") and not text.startswith("No parseable"):
-                truncated_text = text[:1500]
-                return {
-                    "url": url_val,
-                    "block_template": f"--- START SOURCE [__IDX__] ---\nURL: {url_val}\nCONTENT:\n{truncated_text}\n--- END SOURCE [__IDX__] ---",
-                    "telemetry": scrape_telemetry
+
+    # Yield initial state telemetry event
+    yield f"data: {json.dumps({'type': 'state', 'data': {'thread_id': thread_id, 'query': query, 'summary': summary, 'sources_scraped': 0}})}\n\n"
+
+    # Define tools schemas for Gemini (OpenAI compatible format)
+    tools_schema = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Queries SearXNG search engine for real-time web results when the user requests information that requires current web search data.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query keywords to look up."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Number of results to return (default 3)."
+                        }
+                    },
+                    "required": ["query"]
                 }
-            return {"telemetry": scrape_telemetry}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ingest_url",
+                "description": "Fetches and extracts full text content from a specific URL. Use this to scrape the details of a specific web page returned by search results.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The absolute URL of the web page to scrape."
+                        },
+                        "subtopic": {
+                            "type": "string",
+                            "description": "The topic or query keywords corresponding to this scrape."
+                        }
+                    },
+                    "required": ["url", "subtopic"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "vector_search",
+                "description": "Searches previously scraped documents and vector-indexed contexts strictly within the current thread to answer questions using history.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Semantic search query."
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "description": "Number of relevant chunks to retrieve (default 3)."
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }
+    ]
 
-        scrape_tasks = []
-        for res in results:
-            url = res.get("url")
-            if url:
-                scrape_tasks.append(process_single_url(url))
-        
-        scraped_outcomes = await asyncio.gather(*scrape_tasks)
-        
-        idx = 1
-        blocks = []
-        for outcome in scraped_outcomes:
-            if outcome:
-                # Yield scrape telemetry for each URL
-                yield f"data: {json.dumps({'type': 'tool', 'data': outcome['telemetry']})}\n\n"
-                if "block_template" in outcome:
-                    block = outcome["block_template"].replace("__IDX__", str(idx))
-                    blocks.append(block)
-                    source_links.append({"idx": idx, "url": outcome["url"]})
-                    idx += 1
-        
-        if blocks:
-            scraped_context = "\n\n".join(blocks)
-    except Exception as e:
-        print(f"General mode live web lookup fallback: {e}")
-
-    # Yield state telemetry event
-    yield f"data: {json.dumps({'type': 'state', 'data': {'thread_id': thread_id, 'query': query, 'summary': summary, 'sources_scraped': len(source_links)}})}\n\n"
-
-    # 3. Build VRAM-Optimized Prompt Block with Strict Citation Mandate
-    system_prompt = mode_cfg.system_prompt
-    if scraped_context:
-        citation_instructions = "\n\nCRITICAL INSTRUCTION FOR CITATIONS:\n"
-        for link in source_links:
-            citation_instructions += f"Source [{link['idx']}] corresponds to the exact URL: {link['url']}\n"
-        
-        citation_instructions += (
-            "\nYou must back up every factual assertion, troubleshooting step, or specification extracted from the web text "
-            "by embedding its precise URL inline as a markdown link. "
-            "Example format: 'According to community reports, flashing firmware version 1.0.4 resolves the tracking loss [Source](https://example.com/actual-link).'\n"
-            "Do not omit the markdown link structure. Do not list references at the bottom without inline markdown links."
-        )
-        system_prompt += citation_instructions
+    # Build ReAct Prompt Instructions
+    system_prompt = (
+        f"{mode_cfg.system_prompt}\n\n"
+        "You are a helpful, advanced AI coding and research agent. You have access to real-time tools for search, web page scraping, and vector search in your database.\n"
+        "Strict Guidelines:\n"
+        "1. Actively use the web_search tool if the user's request requires fresh real-world information, technical specifications, or latest releases.\n"
+        "2. After searching, use ingest_url on the most promising results to scrape deep information. Never answer with placeholder knowledge when you can scrape live sources.\n"
+        "3. If referencing facts retrieved from a scraped page, you MUST cite the source inline. Use format: [Source](url).\n"
+        "4. Use vector_search if the user is asking about previous contexts or documents you ingested in this thread.\n"
+        "5. Execute tools as needed, analyze results, and respond directly to the user when you are done."
+    )
 
     llm_messages = [{"role": "system", "content": system_prompt}]
-    
     if summary:
         llm_messages.append({"role": "system", "content": f"Established Context Summary:\n{summary}"})
-        
-    if scraped_context:
-        llm_messages.append({"role": "system", "content": f"Verified Live Web Documents:\n{scraped_context}"})
-        
+    
+    # Extend conversation history
     llm_messages.extend(past_messages)
     llm_messages.append({"role": "user", "content": query})
-    
-    # 4. Stream response back to the UI via the router wrapper
+
+    MAX_TURNS = 5
+    turn = 0
     final_content = ""
-    try:
-        response_stream = await client.chat.completions.create(
-            model=mode_cfg.model_name,
-            messages=llm_messages,
-            temperature=mode_cfg.temperature,
-            max_tokens=mode_cfg.max_tokens,
-            stream=True
-        )
+    
+    from src.agent.tools.registry import execute_tool
+
+    while turn < MAX_TURNS:
+        turn += 1
         
-        async for chunk in response_stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                final_content += delta
-                yield f"data: {json.dumps({'type': 'delta', 'content': delta})}\n\n"
+        try:
+            response = await llm_client.chat.completions.create(
+                model=mode_cfg.model_name,
+                messages=llm_messages,
+                temperature=mode_cfg.temperature,
+                max_tokens=mode_cfg.max_tokens,
+                tools=tools_schema
+            )
+        except Exception as e:
+            error_msg = f"LLM client call error: {str(e)}"
+            yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+            
+        message = response.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None)
+        
+        if tool_calls:
+            # Parse assistant message with tool calls
+            assistant_msg = {
+                "role": "assistant",
+                "content": message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    } for tc in tool_calls
+                ]
+            }
+            llm_messages.append(assistant_msg)
+            
+            # Execute tools
+            for tool_call in tool_calls:
+                tool_name = tool_call.function.name
+                tool_args_str = tool_call.function.arguments
                 
-    except Exception as e:
-        error_msg = f"Local LLM streaming error: {str(e)}"
-        yield f"data: {json.dumps({'type': 'error', 'message': error_msg})}\n\n"
-        yield "data: [DONE]\n\n"
-        return
-        
-    # 5. Push the new interaction into LangGraph to trigger background memory management
+                try:
+                    tool_args = json.loads(tool_args_str)
+                except Exception:
+                    tool_args = {}
+                    
+                yield f"data: {json.dumps({'type': 'status', 'node': tool_name, 'message': f'Executing agent tool: {tool_name}...' })}\n\n"
+                
+                if tool_name in ["ingest_url", "vector_search"]:
+                    tool_args["thread_id"] = thread_id
+                    
+                try:
+                    result, telemetry = await execute_tool(tool_name, **tool_args)
+                except Exception as e:
+                    result = f"Error executing tool {tool_name}: {e}"
+                    telemetry = {
+                        "name": tool_name,
+                        "status": "failed",
+                        "input": tool_args,
+                        "output": str(e),
+                        "duration_ms": 0
+                    }
+                    
+                yield f"data: {json.dumps({'type': 'tool', 'data': telemetry })}\n\n"
+                
+                tool_response_msg = {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": tool_name,
+                    "content": str(result)
+                }
+                llm_messages.append(tool_response_msg)
+            
+            continue
+        else:
+            # Final text response
+            content = message.content or ""
+            final_content = content
+            
+            # Simulate streaming delta to the frontend
+            chunk_size = 12
+            for i in range(0, len(content), chunk_size):
+                delta = content[i:i+chunk_size]
+                yield f"data: {json.dumps({'type': 'delta', 'content': delta})}\n\n"
+                await asyncio.sleep(0.01)
+                
+            break
+
+    # Save conversation state in LangGraph checkpointer
     new_past_messages = past_messages + [
         {"role": "user", "content": query},
         {"role": "assistant", "content": final_content}
@@ -138,5 +221,4 @@ async def stream_chat(payload: Any, mode_cfg: Any):
         config=config
     )
 
-    # 6. The Stream Kill Signal
     yield "data: [DONE]\n\n"
