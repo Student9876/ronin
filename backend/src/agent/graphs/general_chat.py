@@ -110,6 +110,23 @@ async def stream_chat(payload: Any, mode_cfg: Any):
     if summary:
         llm_messages.append({"role": "system", "content": f"Established Context Summary:\n{summary}"})
     
+    # Query and inject cross-thread long-term semantic memories
+    try:
+        from src.agent.tools.long_term_memory import long_term_memory
+        lt_memories = await long_term_memory.retrieve_long_term_memories(query, limit=2)
+        if lt_memories:
+            memories_block = "\n".join([f"- {m}" for m in lt_memories])
+            llm_messages.append({
+                "role": "system", 
+                "content": (
+                    "Cross-Thread Historical Memories (Context retrieved from other sessions):\n"
+                    f"{memories_block}\n"
+                    "Use this historical context if it is relevant to the user's current request."
+                )
+            })
+    except Exception as e:
+        print(f"Failed to retrieve long-term memories: {e}")
+    
     # Extend conversation history
     llm_messages.extend(past_messages)
     llm_messages.append({"role": "user", "content": query})

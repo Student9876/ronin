@@ -290,9 +290,24 @@ async def stream_research(payload: Any, mode_cfg: Any):
         yield "data: [DONE]\n\n"
         return
 
+    # Query and inject cross-thread long-term semantic memories
+    lt_memories_block = ""
+    try:
+        from src.agent.tools.long_term_memory import long_term_memory
+        lt_memories = await long_term_memory.retrieve_long_term_memories(payload.query, limit=2)
+        if lt_memories:
+            memories_text = "\n".join([f"- {m}" for m in lt_memories])
+            lt_memories_block = (
+                "CROSS-THREAD HISTORICAL MEMORIES (Context retrieved from other sessions):\n"
+                f"{memories_text}\n\n"
+            )
+    except Exception as e:
+        print(f"Failed to retrieve long-term memories in deep research: {e}")
+
     system_prompt = (
         f"{mode_cfg.system_prompt}\n\n"
         "You are a strict technical research synthesizer. Your ONLY job is to write a comprehensive report using strictly the facts provided below.\n\n"
+        f"{lt_memories_block}"
         "HARD TECHNICAL RULES:\n"
         "1. DO NOT invent or extrapolate features. If a detail is not in the VERIFIED FACTS MATRIX, do not mention it.\n"
         "2. Keep real-world hardware architecture accurate. The Ryzen 7 9800X3D is Zen 5. Do NOT reference legacy Zen 3 utilities.\n"
