@@ -24,6 +24,8 @@ class AgentConfigMatrix(BaseSettings):
     QDRANT_URL: str = "http://qdrant:6333"
     EMBEDDING_MODEL: str = "gemini-embedding-2"
     DATABASE_URL: str = "sqlite:///ronin_database.db"
+    MEMORY_THRESHOLD: int = 20
+    MEMORY_PRESERVE: int = 6
 
     # Strict System Constraints Matrix
     MODES: Dict[str, ModeSettings] = {

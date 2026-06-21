@@ -4,6 +4,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from pydantic import BaseModel, Field
 from src.utils.llm_client import call_local_llm_structured
+from src.config.agent_config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ class MemoryState(TypedDict):
 class ConversationSummary(BaseModel):
     summary: str = Field(description="A concise, high-density summary of the conversation history so far.")
 
-async def compact_history(state: MemoryState) -> dict:
+async def compact_history(state: MemoryState, config: dict = None) -> dict:
     """
     Node: Detects when the message backlog exceeds safety boundaries 
     and squashes older blocks into a high-density rolling context summary.
@@ -27,14 +28,14 @@ async def compact_history(state: MemoryState) -> dict:
     messages = state.get("messages", [])
     
     # Defensive execution: if history is shallow, bypass compaction entirely
-    if len(messages) <= 6:
+    if len(messages) <= settings.MEMORY_THRESHOLD:
         return {"messages": []}
 
     logger.info(f"Compaction triggered. Processing {len(messages)} historical records.")
     
-    # Keep the latest 2 messages to maintain immediate operational context
-    preserved_messages = messages[-2:]
-    messages_to_summarize = messages[:-2]
+    # Keep the latest messages to maintain immediate operational context
+    preserved_messages = messages[-settings.MEMORY_PRESERVE:]
+    messages_to_summarize = messages[:-settings.MEMORY_PRESERVE]
 
     # Invoke our centralized LLM client helper to generate the summary
     system_prompt = (
@@ -51,6 +52,16 @@ async def compact_history(state: MemoryState) -> dict:
         logger.error(f"Failed to generate rolling context summary: {e}")
         summary = "Prior conversation summarized to maintain context boundaries."
 
+    # Index the generated summary into long-term memory
+    if config and "configurable" in config:
+        thread_id = config["configurable"].get("thread_id")
+        if thread_id:
+            try:
+                from src.agent.tools.long_term_memory import long_term_memory
+                await long_term_memory.save_memory_summary(int(thread_id), summary)
+            except Exception as e:
+                logger.error(f"Failed to index compaction summary into long-term memory: {e}")
+
     return {
         "messages": preserved_messages,
         "summary": summary
@@ -61,7 +72,7 @@ def route_compaction(state: MemoryState) -> Literal["compact", "__end__"]:
     Conditional Edge Router: Evaluates whether the active state window
     requires compression before handing execution back to the client transport.
     """
-    if len(state.get("messages", [])) > 6:
+    if len(state.get("messages", [])) > settings.MEMORY_THRESHOLD:
         return "compact"
     return "__end__"
 
@@ -115,7 +126,7 @@ async def bootstrap_memory_state(thread_id: int):
                 past_messages.append({"role": msg.role, "content": msg.content})
                 
             # If the database has messages, populate them. 
-            # Note: the compaction router will automatically compact them if they exceed 6 messages on initialization
+            # Note: the compaction router will automatically compact them if they exceed the threshold messages on initialization
             await memory_app.ainvoke(
                 {"summary": "", "messages": past_messages},
                 config=config
