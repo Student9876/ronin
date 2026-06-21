@@ -1,15 +1,19 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 from src.config.database import create_db_and_tables
 from src.api.router import router as agent_router
 from src.api.threads import router as threads_router
+from src.api.vault import router as vault_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # This fires immediately on container bootup and recreates missing tables
     await create_db_and_tables()
+    # Create vault directory if it does not exist
+    os.makedirs("/app/vault", exist_ok=True)
     yield
 
 app = FastAPI(
@@ -30,3 +34,4 @@ app.add_middleware(
 # Core Router Mounting
 app.include_router(agent_router, prefix="/api/v1")
 app.include_router(threads_router, prefix="/api/v1")
+app.include_router(vault_router, prefix="/api/v1")

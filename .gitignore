@@ -51,3 +51,6 @@ yarn-error.log*
 *.pem
 
 ronin_database.db
+
+# --- Vault ---
+backend/vault/

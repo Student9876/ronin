@@ -49,6 +49,11 @@ interface ChatState {
     addTool: (tool: any) => void;
     clearTelemetry: () => void;
     executeStream: (threadId: number, query: string, modeToUse: string) => Promise<void>;
+    pendingQuery: { query: string; mode: string } | null;
+    setPendingQuery: (pending: { query: string; mode: string } | null) => void;
+    vaultFiles: Array<{ name: string; size: number; mtime: number }>;
+    fetchVaultFiles: () => Promise<void>;
+    fetchVaultFileContent: (filename: string) => Promise<string>;
 }
 
 const API_BASE = "http://localhost:8000/api/v1";
@@ -67,6 +72,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
         mode: "general", // Default to the faster, single-turn graph
         searchDepth: "comprehensive",
         strictness: "strict",
+    },
+    pendingQuery: null,
+    setPendingQuery: (pending) => set({ pendingQuery: pending }),
+    vaultFiles: [],
+    fetchVaultFiles: async () => {
+        try {
+            const res = await fetch(`${API_BASE}/vault/`);
+            const data = await res.json();
+            if (Array.isArray(data)) {
+                set({ vaultFiles: data });
+            } else {
+                set({ vaultFiles: [] });
+            }
+        } catch (error) {
+            console.error("Failed to fetch vault files:", error);
+            set({ vaultFiles: [] });
+        }
+    },
+    fetchVaultFileContent: async (filename: string) => {
+        try {
+            const res = await fetch(`${API_BASE}/vault/${encodeURIComponent(filename)}`);
+            const data = await res.json();
+            return data.content || "";
+        } catch (error) {
+            console.error("Failed to fetch vault file content:", error);
+            return "";
+        }
     },
 
     fetchThreads: async () => {
