@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 from typing import Dict, Literal, Optional
 
 class ModeSettings(BaseModel):
-    mode_id: Literal["general", "deep", "code"]
+    mode_id: Literal["general", "code"]
     model_name: str
     temperature: float
     max_tokens: int
@@ -17,7 +17,6 @@ class AgentConfigMatrix(BaseSettings):
     LOCAL_LLM_URL: Optional[str] = None  # Legacy support fallback
 
     GENERAL_MODEL: str = "meta-llama-3-8b-instruct"
-    DEEP_MODEL: str = "meta-llama-3-8b-instruct"
     CODE_MODEL: str = "meta-llama-3-8b-instruct"
 
     SEARXNG_URL: str = "http://searxng:8080/search"
@@ -35,13 +34,6 @@ class AgentConfigMatrix(BaseSettings):
             temperature=0.7,
             max_tokens=2048,
             system_prompt="You are a precise local terminal assistant. Provide direct, objective answers. No sugar-coating."
-        ),
-        "deep": ModeSettings(
-            mode_id="deep",
-            model_name="meta-llama-3-8b-instruct", 
-            temperature=0.1, # Drop temperature close to zero to force rigid fact synthesis
-            max_tokens=4096,
-            system_prompt="You are a lead synthesis supervisor. Compile fragmented grounding artifacts into high-density reference dossiers."
         ),
         "code": ModeSettings(
             mode_id="code",
@@ -61,7 +53,6 @@ class AgentConfigMatrix(BaseSettings):
 
         # Dynamically override the configuration matrix with env overrides
         self.MODES["general"].model_name = self.GENERAL_MODEL
-        self.MODES["deep"].model_name = self.DEEP_MODEL
         self.MODES["code"].model_name = self.CODE_MODEL
 
     class Config:

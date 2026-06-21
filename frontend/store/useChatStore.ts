@@ -18,7 +18,7 @@ export type AgentEvent = {
 };
 
 export interface AgentSettings {
-    mode: "general" | "deep";
+    mode: "general" | "code";
     searchDepth: "quick" | "comprehensive" | "exhaustive";
     strictness: "lenient" | "strict";
 }

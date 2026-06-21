@@ -1,7 +1,7 @@
 "use client";
 
 import {useState, useRef, useEffect} from "react";
-import {Send, User, TerminalSquare, MessageSquare, Microscope} from "lucide-react";
+import {Send, User, TerminalSquare, MessageSquare, Code} from "lucide-react";
 import {MessageBubble} from "./MessageBubble";
 
 export type Message = {
@@ -14,7 +14,7 @@ export type Message = {
 export function ChatPane({messages, isStreaming, onSubmit}: any) {
 	const [input, setInput] = useState("");
 	// Track the active agent mode
-	const [mode, setMode] = useState<"general" | "deep">("general");
+	const [mode, setMode] = useState<"general" | "code">("general");
 
 	const messagesEndRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -100,13 +100,9 @@ export function ChatPane({messages, isStreaming, onSubmit}: any) {
 								<MessageSquare size={14} /> General Chat
 							</button>
 							<button
-								onClick={() => setMode("deep")}
-								className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-									mode === "deep"
-										? "bg-emerald-50 text-emerald-700 shadow-sm ring-1 ring-emerald-200"
-										: "text-slate-500 hover:text-slate-700 hover:bg-slate-200/50"
-								}`}>
-								<Microscope size={14} /> Deep Research
+								disabled
+								className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium text-slate-400 opacity-50 cursor-not-allowed">
+								<Code size={14} /> Code
 							</button>
 						</div>
 

@@ -2,7 +2,7 @@ import "./globals.css";
 
 export const metadata = {
 	title: "Ronin Engine Workspace",
-	description: "Deep Research and Code Analysis Agent",
+	description: "General Chat and Code Analysis Agent",
 };
 
 export default function RootLayout({children}: {children: React.ReactNode}) {

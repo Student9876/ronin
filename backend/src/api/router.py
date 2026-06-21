@@ -12,7 +12,7 @@ router = APIRouter(prefix="/agent", tags=["Agent Operations"])
 class QueryPayload(BaseModel):
     thread_id: int
     query: str
-    mode: Literal["general", "deep", "code"]
+    mode: Literal["general", "code"]
     search_depth: Optional[Literal["quick", "comprehensive", "exhaustive"]] = "comprehensive"
     strictness: Optional[Literal["lenient", "strict"]] = "strict"
 
@@ -82,10 +82,6 @@ async def handle_agent_stream(payload: QueryPayload): # Removed session dependen
         from src.agent.graphs.general_chat import stream_chat
         # Removed the session argument here to match the pure graph
         engine_generator = stream_chat(payload, mode_cfg)
-
-    elif payload.mode == "deep":
-        from src.agent.graphs.deep_research import stream_research
-        engine_generator = stream_research(payload, mode_cfg)
 
     elif payload.mode == "code":
         async def stub_code_mode():

@@ -20,11 +20,11 @@ export function ChatInput({query, setQuery, handleSubmit, isStreaming, settings,
 					<Cpu className="w-4 h-4 text-neutral-500 mr-2" />
 					<select
 						value={settings.mode}
-						onChange={(e) => setSettings({mode: e.target.value as "general" | "deep"})}
+						onChange={(e) => setSettings({mode: e.target.value as "general" | "code"})}
 						disabled={isStreaming}
 						className="bg-transparent text-sm text-neutral-300 focus:outline-none disabled:opacity-50 appearance-none cursor-pointer">
 						<option value="general">General</option>
-						<option value="deep">Deep Research</option>
+						<option value="code" disabled>Code</option>
 					</select>
 				</div>
 
@@ -33,7 +33,7 @@ export function ChatInput({query, setQuery, handleSubmit, isStreaming, settings,
 					value={query}
 					onChange={(e) => setQuery(e.target.value)}
 					disabled={isStreaming}
-					placeholder={settings.mode === "deep" ? "Deploy multi-agent research..." : "Ask a general question..."}
+					placeholder={settings.mode === "code" ? "Code mode..." : "Ask a general question..."}
 					className="w-full bg-transparent px-4 py-4 pr-14 text-neutral-200 placeholder:text-neutral-600 focus:outline-none disabled:opacity-50"
 				/>
 				<button
