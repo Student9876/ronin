@@ -1,10 +1,9 @@
 "use client";
 
-import {useState, useRef, useEffect, use} from "react";
+import {useState, useEffect, use} from "react";
 import {useChatStore} from "@/store/useChatStore";
 import {ChatPane} from "@/components/chat/ChatPane";
 import {PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen} from "lucide-react";
-import {useSearchParams, useRouter} from "next/navigation";
 import {InspectorPane} from "@/components/chat/InspectorPane";
 import {Sidebar} from "@/components/chat/Sidebar";
 
@@ -17,29 +16,22 @@ export default function ChatPage({params}: {params: Promise<{id: string}>}) {
 
 	const {
 		messages, fetchMessages, isStreaming, fetchThreads, settings,
-		events, agentState, tools, executeStream, streamingThreadId
+		events, agentState, tools, executeStream, streamingThreadId,
+		pendingQuery, setPendingQuery
 	} = useChatStore();
 
 	useEffect(() => {
 		fetchMessages(threadId);
 	}, [threadId, fetchMessages]);
 
-	const searchParams = useSearchParams();
-	const router = useRouter();
-	const hasInitialized = useRef(false);
-
 	useEffect(() => {
-		const initialQuery = searchParams.get("q");
-		const initialMode = searchParams.get("m");
-		
-		if (initialQuery && !hasInitialized.current) {
-			hasInitialized.current = true;
-			setTimeout(() => {
-				executeStream(threadId, initialQuery, initialMode || settings.mode);
-				router.replace(`/chat/${threadId}`);
-			}, 100);
+		if (pendingQuery) {
+			const { query, mode } = pendingQuery;
+			// Clear it first to prevent double-execution
+			setPendingQuery(null);
+			executeStream(threadId, query, mode);
 		}
-	}, [searchParams, router, threadId, settings.mode]);
+	}, [pendingQuery, threadId, executeStream, setPendingQuery]);
 
 	return (
 		<div className="flex h-screen w-full bg-slate-50 text-slate-900 overflow-hidden m-0 p-0">

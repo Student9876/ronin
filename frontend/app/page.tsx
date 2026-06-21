@@ -9,7 +9,7 @@ import {Sidebar} from "@/components/chat/Sidebar";
 
 export default function AgentWorkspace() {
 	const router = useRouter();
-	const {createThread} = useChatStore();
+	const {createThread, setPendingQuery} = useChatStore();
 	const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 	const [isInspectorOpen, setIsInspectorOpen] = useState(true);
 	const [isCreating, setIsCreating] = useState(false);
@@ -17,7 +17,8 @@ export default function AgentWorkspace() {
 	const handleNewQuery = async (query: string, mode: string) => {
 		setIsCreating(true);
 		const newId = await createThread();
-		router.push(`/chat/${newId}?q=${encodeURIComponent(query)}&m=${mode}`);
+		setPendingQuery({ query, mode });
+		router.push(`/chat/${newId}`);
 	};
 
 	return (
