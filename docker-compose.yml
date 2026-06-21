@@ -42,6 +42,20 @@ services:
       - qdrant_storage:/qdrant/storage
     restart: unless-stopped
 
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - HOSTNAME=0.0.0.0
+    depends_on:
+      - ronin_agent
+    restart: always
+
 volumes:
   qdrant_storage:
   searxng_cache:
